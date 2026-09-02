@@ -10,9 +10,11 @@ ENV FLASK_APP=phase_5_1_forecast_api.py
 ENV FLASK_ENV=production
 
 # Install system dependencies
+# curl is needed by the HEALTHCHECK below.
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first (for better caching)
@@ -22,9 +24,14 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY phase_5_1_forecast_api.py .
-COPY market_data.db .
-COPY .env .
+COPY backend/phase_5_1_forecast_api.py .
+
+# market_data.db is deliberately NOT copied in. It is generated data, not
+# source, so it is gitignored and absent from a fresh clone -- baking it in
+# would break the build. docker-compose mounts it at runtime instead.
+#
+# .env is deliberately NOT copied in either. Secrets belong in the runtime
+# environment, not in an image layer anyone with the image can read.
 
 # Create directories for model files
 RUN mkdir -p /app/models
