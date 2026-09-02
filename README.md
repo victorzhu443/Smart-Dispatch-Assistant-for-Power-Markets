@@ -204,18 +204,54 @@ API refuses to start without `gpt2_dispatch_model/` and `market_embeddings.json`
 
 ### Running the services
 
+The forecast API serves the trained artifact, so train it first:
+
 ```bash
+python forecasting-model/train_model.py     # -> forecast_model.joblib
 python backend/phase_5_1_forecast_api.py    # http://localhost:5001
 python backend/phase_5_2_minimal.py         # http://localhost:5002 (+ /chat)
 ```
 
 ```bash
-curl http://localhost:5001/forecast
-curl "http://localhost:5001/forecast?timestamp=2025-07-31T15:30:00"
+curl "http://localhost:5001/forecast?timestamp=2025-12-15T18:00:00Z"
+curl "http://localhost:5001/forecast?timestamp=2025-12-15T18:00:00Z&marginal_cost=55"
+curl http://localhost:5001/health
 curl -X POST http://localhost:5002/query \
   -H 'Content-Type: application/json' \
   -d '{"question": "Should we dispatch the gas peaker?"}'
 ```
+
+Every forecast response carries provenance — which model answered, its
+version, the training cutoff, and whether any fallback was engaged:
+
+```json
+"provenance": {
+  "model": "quantile_gbm",
+  "model_version": "93af19a3f79c",
+  "degraded": false,
+  "training_cutoff": "2026-01-01T05:00:00+00:00",
+  "data_age_hours": 5856.1
+}
+```
+
+### Fallback policy — degrade visibly, never invent
+
+Every degraded path is detectable by the caller through
+`provenance.degraded` and `provenance.model`. The service will not return
+something that looks like a full-confidence answer when it is not.
+
+| Failure | Response |
+| --- | --- |
+| Model artifact missing or unreadable | Serves seasonal-naive, `"model": "seasonal_naive_fallback"`, `degraded: true` |
+| Live forecast requested on stale data | `503` naming the age and the limit; an explicit historical `?timestamp=` still works |
+| Requested hour not in the data | `422` with `latest_available` |
+| Invalid timestamp or marginal cost | `422` naming the field |
+| P10–P90 spread beyond the threshold | Forecast returned, `"action": "no_action"`, `"reason": "interval_too_wide"` |
+| Database unreachable | `503`, health check red |
+
+Health reflects real readiness rather than a constant. Stale data reports
+`degraded`, not `healthy` — otherwise an orchestrator keeps routing live
+traffic that will 503.
 
 Kubernetes (minikube) deployment: `bash backend/deploy_k8s.sh`.
 
@@ -259,15 +295,14 @@ Ordered by how much they'd need fixing before this is more than a demo.
    `ImproperlyConfigured`. `smart_ui/urls.py` also imports `views` from its own
    package, but the views live in `dashboard/views.py`. PRD test case 6.1
    ("localhost:8000 loads basic UI") therefore does not pass.
-7. **The forecast API does not use the trained LSTM.** `phase_5_1_forecast_api.py`
-   trains its own `RandomForestRegressor` at startup and falls back to a
-   mean-price constant if that fails. `model.pt` is only loaded by
-   `model_usage_example.py`. The served forecast and the evaluated model are two
-   different things.
-8. **The forecast API's features are mostly hardcoded.** `predict_price()` passes
-   fixed values for `price_mean`, `price_std`, `trend_slope` and momentum, varying
-   only the time-derived features, then applies hand-tuned peak/off-peak
-   multipliers. It is closer to a time-of-day heuristic than a learned model.
+7. ~~**The forecast API does not use the trained model.**~~ **Fixed.** It
+   trained a `RandomForestRegressor` at import time and predicted from
+   hardcoded feature values, so the thing served was never the thing
+   evaluated. It now loads the versioned artifact from
+   `forecasting-model/train_model.py` and reports which model answered.
+8. ~~**The forecast API's features are mostly hardcoded.**~~ **Fixed.**
+   Features are now built from real history by the same code path used in
+   training, so serving and evaluation cannot drift apart.
 9. **`docker-compose.yml` cannot build.** It specifies `dockerfile: Dockerfile`,
    but the file in the repo is named `Dockerfile.txt`.
 10. **Heavy duplication across phase scripts.** `setup_database_connection()` and
