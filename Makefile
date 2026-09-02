@@ -16,7 +16,7 @@ YEARS  ?= 2024 2025 2026
 HUB    ?= HB_HOUSTON
 
 .PHONY: help setup schema check-schema backfill ingest features train \
-        quality check-fresh backtest dispatch serve test lint clean all
+        quality check-fresh monitor backtest dispatch serve test lint clean all
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -50,6 +50,9 @@ quality:  ## Report table freshness and recent quality checks
 
 check-fresh:  ## Exit non-zero if any table is stale (cron/alerting target)
 	$(PYTHON) -m data_ingestion.quality --check
+
+monitor:  ## Alert if the pipeline has stopped or is failing (cron target)
+	$(PYTHON) -m data_ingestion.monitor
 
 backtest:  ## Score the baselines over all history
 	$(PYTHON) -m forecasting_model.backtest --hub $(HUB)
