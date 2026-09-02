@@ -57,11 +57,8 @@ print_success "All prerequisites met"
 # Check required files
 print_status "Checking required files..."
 required_files=(
-    "phase_5_1_forecast_api.py"
-    "phase_5_2_minimal.py" 
+    "backend/phase_5_1_forecast_api.py"
     "market_data.db"
-    "market_embeddings.json"
-    "gpt2_dispatch_model"
 )
 
 for file in "${required_files[@]}"; do
@@ -162,66 +159,6 @@ spec:
   type: ClusterIP
 EOF
 
-# Create query deployment manifest
-cat > k8s-query.yaml << 'EOF'
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: query-api
-  namespace: smart-dispatch
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: query-api
-  template:
-    metadata:
-      labels:
-        app: query-api
-    spec:
-      containers:
-      - name: query-api
-        image: smart-dispatch-query:latest
-        imagePullPolicy: Never
-        ports:
-        - containerPort: 5002
-        env:
-        - name: FLASK_ENV
-          value: "production"
-        resources:
-          limits:
-            memory: "3Gi"
-            cpu: "1000m"
-          requests:
-            memory: "1Gi"
-            cpu: "500m"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 5002
-          initialDelaySeconds: 60
-          periodSeconds: 15
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 5002
-          initialDelaySeconds: 30
-          periodSeconds: 10
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: query-service
-  namespace: smart-dispatch
-spec:
-  selector:
-    app: query-api
-  ports:
-  - port: 80
-    targetPort: 5002
-  type: ClusterIP
-EOF
-
 # Create ingress manifest
 cat > k8s-ingress.yaml << 'EOF'
 apiVersion: networking.k8s.io/v1
@@ -301,28 +238,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY phase_5_1_forecast_api.py .
 COPY market_data.db .
 EXPOSE 5001
-CMD ["python", "phase_5_1_forecast_api.py"]
+CMD ["python", "backend/phase_5_1_forecast_api.py"]
 EOF
 
 docker build -f Dockerfile.forecast -t smart-dispatch-forecast:latest .
-
-# Build query API image
-print_status "Building query API image..."
-cat > Dockerfile.query << 'EOF'
-FROM python:3.9-slim
-WORKDIR /app
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
-COPY requirements_minimal.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
-COPY phase_5_2_minimal.py .
-COPY market_embeddings.json .
-COPY gpt2_dispatch_model/ ./gpt2_dispatch_model/
-COPY market_data.db .
-EXPOSE 5002
-CMD ["python", "phase_5_2_minimal.py"]
-EOF
-
-docker build -f Dockerfile.query -t smart-dispatch-query:latest .
 
 print_success "Docker images built successfully"
 
@@ -334,12 +253,10 @@ kubectl apply -f k8s-namespace.yaml
 
 # Deploy services
 kubectl apply -f k8s-forecast.yaml
-kubectl apply -f k8s-query.yaml
 
 # Wait for deployments to be ready
 print_status "Waiting for deployments to be ready..."
 kubectl wait --for=condition=available --timeout=300s deployment/forecast-api -n smart-dispatch
-kubectl wait --for=condition=available --timeout=300s deployment/query-api -n smart-dispatch
 
 # Deploy ingress
 kubectl apply -f k8s-ingress.yaml
@@ -375,29 +292,6 @@ else
     print_error "❌ Forecast API not accessible at $FORECAST_URL"
 fi
 
-# Test query endpoint
-print_status "Testing query endpoint..."
-QUERY_URL="http://$INGRESS_IP/query"
-QUERY_RESPONSE=$(curl -s -X POST "$QUERY_URL" \
-    -H 'Content-Type: application/json' \
-    -d '{"question": "Should we dispatch the gas peaker?"}' 2>/dev/null || echo "error")
-
-if echo "$QUERY_RESPONSE" | grep -q "answer"; then
-    ANSWER=$(echo "$QUERY_RESPONSE" | grep -o '"answer":"[^"]*"' | cut -d':' -f2 | tr -d '"')
-    print_success "✅ Query API accessible: ${ANSWER:0:50}..."
-else
-    print_error "❌ Query API not accessible at $QUERY_URL"
-fi
-
-# Test chatbot interface
-print_status "Testing chatbot interface..."
-CHAT_URL="http://$INGRESS_IP/chat"
-if curl -f -s "$CHAT_URL" | grep -q "Smart Dispatch Assistant"; then
-    print_success "✅ Chatbot interface accessible"
-else
-    print_warning "⚠️ Chatbot interface may not be accessible"
-fi
-
 # Show cluster status
 print_status "Kubernetes cluster status:"
 kubectl get pods -n smart-dispatch -o wide
@@ -411,29 +305,24 @@ print_success "🎉 Phase 5.3 COMPLETE: Smart Dispatch System deployed to Kubern
 echo ""
 echo "📊 Deployment Summary:"
 echo "   Namespace: smart-dispatch"
-echo "   Services: forecast-api, query-api"
 echo "   Ingress: smart-dispatch-ingress"
 echo "   Minikube IP: $INGRESS_IP"
 echo ""
 echo "🔗 Access URLs:"
 echo "   Forecast API: http://$INGRESS_IP/forecast"
-echo "   Query API: http://$INGRESS_IP/query"
-echo "   Chatbot: http://$INGRESS_IP/chat"
 echo "   Health Check: http://$INGRESS_IP/health"
 echo ""
 echo "🧪 Test Commands:"
 echo "   curl http://$INGRESS_IP/forecast"
-echo "   curl -X POST http://$INGRESS_IP/query -H 'Content-Type: application/json' -d '{\"question\": \"Should we dispatch the gas peaker?\"}'"
+echo "   curl http://$INGRESS_IP/health"
 echo ""
 echo "📊 PRD Test Case Status:"
-if [[ "$FORECAST_RESPONSE" == *"predicted_price"* ]] && [[ "$QUERY_RESPONSE" == *"answer"* ]]; then
-    print_success "✅ PASSED: Accessible via localhost/query and localhost/forecast"
+if [[ "$FORECAST_RESPONSE" == *"forecast"* ]]; then
+    print_success "✅ PASSED: Accessible via localhost/forecast"
 else
-    print_warning "⚠️ PARTIAL: Some endpoints may need additional configuration"
+    print_warning "⚠️ PARTIAL: The forecast endpoint may need additional configuration"
 fi
-echo ""
-echo "🔄 Next: Phase 6 - Frontend & Django"
 echo ""
 echo "To stop: minikube stop"
 echo "To delete: minikube delete"
-echo "To view logs: kubectl logs -f deployment/query-api -n smart-dispatch"
+echo "To view logs: kubectl logs -f deployment/forecast-api -n smart-dispatch"

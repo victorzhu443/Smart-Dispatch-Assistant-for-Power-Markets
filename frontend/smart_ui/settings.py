@@ -71,4 +71,3 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 FORECAST_API_URL = os.getenv("FORECAST_API_URL", "http://127.0.0.1:5001/forecast")
 FORECAST_RANGE_URL = os.getenv("FORECAST_RANGE_URL",
                                "http://127.0.0.1:5001/forecast/range")
-QUERY_API_URL    = os.getenv("QUERY_API_URL",    "http://127.0.0.1:5002/query")

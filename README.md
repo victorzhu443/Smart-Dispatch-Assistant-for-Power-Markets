@@ -128,43 +128,37 @@ costs. The distribution is well calibrated; the decision rule built on it is
 simply too permissive. Tuning its threshold on this same data would be fitting
 to the evaluation set, so it is left as reported.
 
-### RAG fine-tuning (Phase 4) — worse than the base model
+### Retrieval + LLM (Phase 4) — removed
 
-GPT-2 fine-tuned on ~100 dispatch Q&A pairs, evaluated against GPT-generated
-reference answers. Numbers from
-[`perplexity_evaluation_results.json`](perplexity_evaluation_results.json)
-(`"test_passed": false`), charted in `perplexity_analysis.png`:
+Phase 4 fine-tuned GPT-2 on ~100 dispatch Q&A pairs. It made the model
+substantially worse against its own reference answers — perplexity **54.0 →
+139.4**, a 158% regression, with **0 of 10** questions improved — and the output
+degenerated into repeating settlement point identifiers. Training loss fell
+4.4 → 0.55 while quality collapsed, which is memorisation of a corpus far too
+small to fine-tune on.
 
-| Model | Avg. perplexity |
-| --- | --- |
-| Base GPT-2 | 54.0 |
-| Fine-tuned GPT-2 | 139.4 (**−158%**) |
+The retrieval half was no better founded: its embeddings were built from
+`market_data LIMIT 500`, the table holding two timestamps five minutes apart.
 
-**0 of 10** evaluation questions improved. The fine-tuned model degenerates into
-repeating settlement-point identifiers, e.g.:
-
-> No dispatch recommended. Price of $32.61/MWh is below marginal costs. Current
-> market conditions show moderate pricing at
-> AMOCO_AMOCO_RN.RN.SUB_ALL.GBP.GBP.GB_RN.RN.SUB_ALL.GBP…
-
-Training loss fell from 4.4 to 0.55 over ~110 steps (`training_history.png`) while
-output quality dropped — the model memorized a tiny corpus instead of learning the
-task.
+The whole subsystem has been removed rather than left in place as a negative
+result, because the questions it existed to answer — "should we dispatch the
+peaker?", "what will prices do this afternoon?" — are answered directly, and
+with real numbers, by the quantile forecast and dispatch rule above.
 
 ## Repository layout
 
 | Path | Phase | Contents |
 | --- | --- | --- |
-| `data-ingestion/` | 1 | ERCOT OAuth client and price fetch (`phase_1_3` → `phase_1_5`), NaN handling, SQL persistence. Additional PJM (`ingest_jpm.py`) and MISO (`ingest_miso.py`) ingesters. |
+| `data-ingestion/` | 1 | `ingest_ercot_history.py` (annual backfill, no credentials) and `ingest_recent.py` (cron top-up). Original `phase_1_*` ERCOT-API scripts and PJM/MISO ingesters retained. |
 | `feature-engineering/` | 2 | SQL load → hourly resample → 24h sliding windows → technical features (mean, std, trend slope, moving averages, momentum) → `features` table. |
-| `forecasting-model/` | 3 | `PowerMarketLSTM` in PyTorch: load features, define architecture, train, evaluate RMSE vs. baselines, serialize to `model.pt`. |
-| `llm_rag/` | 4 | SentenceTransformers embeddings → `market_embeddings.json`, GPT-2 fine-tuning, retrieval `/query` endpoint, perplexity evaluation. |
-| `backend/` | 5 | Flask services: `phase_5_1_forecast_api.py` (port 5001) and `phase_5_2_minimal.py` / `phase_5_2_query_api.py` (port 5002), plus Docker and minikube deploy scripts. |
-| `frontend/` | 6 | Django project (`smart_ui`) with a `dashboard` app: the dispatch outlook (P10–P90 band, marginal-cost line, per-hour run/hold call) and a chat page, proxying to the Flask APIs server-side to avoid CORS. |
+| `forecasting-model/` | 3 | `backtest.py` (baselines), `walk_forward.py` (rolling validation), `train_model.py` (versioned quantile artifact), `dispatch.py` (decisions in dollars), plus the original `PowerMarketLSTM` phase scripts. |
+| `backend/` | 5 | `phase_5_1_forecast_api.py` — serves the quantile model and dispatch call on port 5001, with provenance and a fallback ladder. Docker and minikube deploy scripts. |
+| `frontend/` | 6 | Django project (`smart_ui`) with a `dashboard` app: the dispatch outlook — P10–P90 band, marginal-cost line, per-hour run/hold call — proxying to the forecast API server-side to avoid CORS. |
 | `k8s-*.yaml` | 5.3 | Namespace, deployments, services and ingress for local minikube. |
 
-Phase 7 (monitoring) from the PRD is not implemented. Phase 8 (dispatch
-simulation) is covered by `forecasting-model/dispatch.py`.
+Phase 4 (retrieval/LLM) was removed, see above. Phase 7 (monitoring) is not
+implemented. Phase 8 (dispatch simulation) is covered by
+`forecasting-model/dispatch.py`.
 
 ## Setup
 
@@ -221,7 +215,6 @@ The forecast API serves the trained artifact, so train it first:
 ```bash
 python forecasting-model/train_model.py     # -> forecast_model.joblib
 python backend/phase_5_1_forecast_api.py    # http://localhost:5001
-python backend/phase_5_2_minimal.py         # http://localhost:5002 (+ /chat)
 ```
 
 ```bash
@@ -307,55 +300,41 @@ Ordered by how much they'd need fixing before this is more than a demo.
    entirely on hours where the dispatch decision is easy anyway. A point
    forecast is the wrong tool here; quantile forecasting plus an explicit
    dispatch rule is the next step.
-5. **The RAG fine-tuning made the model worse** and is still in the tree.
-   ~100 Q&A pairs is far too few to fine-tune on without catastrophic
-   degradation; the retrieval half works and the fine-tuning half should
-   probably be dropped.
-6. **The Django UI does not start.** `manage.py` and `settings.py` reference a
-   `smartui` module while the package directory is `smart_ui`, giving
-   `ModuleNotFoundError: No module named 'smartui'`. Correcting that surfaces a
-   second problem: `frontend/dashboard/` has no `__init__.py`, so Django raises
-   `ImproperlyConfigured`. `smart_ui/urls.py` also imports `views` from its own
-   package, but the views live in `dashboard/views.py`. PRD test case 6.1
-   ("localhost:8000 loads basic UI") therefore does not pass.
-7. ~~**The forecast API does not use the trained model.**~~ **Fixed.** It
+5. ~~**The Django UI does not start.**~~ **Fixed.** `manage.py` and
+   `settings.py` referenced a `smartui` module while the directory is
+   `smart_ui`, and `frontend/dashboard/` had no `__init__.py`. Both pages
+   now return 200 and PRD test case 6.1 passes.
+6. ~~**The forecast API does not use the trained model.**~~ **Fixed.** It
    trained a `RandomForestRegressor` at import time and predicted from
    hardcoded feature values, so the thing served was never the thing
    evaluated. It now loads the versioned artifact from
    `forecasting-model/train_model.py` and reports which model answered.
-8. ~~**The forecast API's features are mostly hardcoded.**~~ **Fixed.**
+7. ~~**The forecast API's features are mostly hardcoded.**~~ **Fixed.**
    Features are now built from real history by the same code path used in
    training, so serving and evaluation cannot drift apart.
-9. **`docker-compose.yml` cannot build.** It specifies `dockerfile: Dockerfile`,
-   but the file in the repo is named `Dockerfile.txt`.
-10. **Heavy duplication across phase scripts.** `setup_database_connection()` and
+8. ~~**`docker-compose.yml` cannot build.**~~ **Fixed.** The file was named
+   `Dockerfile.txt`; it also copied a moved source path, baked in gitignored
+   data and `.env`, and never installed the `curl` its HEALTHCHECK calls.
+   Not yet verified against a live Docker daemon.
+9. **Heavy duplication across phase scripts.** `setup_database_connection()` and
    the whole `ERCOTClient` class are copy-pasted verbatim into roughly ten files;
    a change to the auth flow means ten edits.
-11. **Test coverage is one module deep.** `tests/test_chronological_split.py`
-   covers the train/test split; everything else still "self-tests" by printing
-   its own PASS/FAIL to stdout, which passes just as happily on fabricated data.
-   Data-validation and pipeline tests are the gap. Run what exists with
-   `pytest tests/ -v`.
-12. **Pinecone is not used.** Phase 4.1 writes embeddings to a local
-   `market_embeddings.json` and retrieval does an in-memory cosine similarity,
-   despite the PRD specifying a vector store.
+10. **No CI.** 110 tests exist and pass locally (`pytest tests/ -v`), but
+    nothing runs them automatically on push.
 
 ## Next steps
 
-- ~~Make the synthetic-data fallback fail loudly instead of silently padding.~~
-  Done — the pipeline now raises `InsufficientDataError`.
-- ~~Seed torch's RNG so runs are comparable.~~ Done.
-- **Ingest real ERCOT history.** This is the only thing that unblocks a real
-  forecasting result. Target 24 months of hourly settlement point prices for a
-  handful of hubs, plus scheduled ingestion (PRD step 1.6), then re-run
-  Phases 2–3.
-- Build a walk-forward backtest and baseline set (persistence, seasonal-naive,
-  and the day-ahead price) *before* tuning any model, so improvements can be
-  distinguished from noise.
-- Fix the Django package naming and add the missing `__init__.py` so Phase 6 runs.
-- Wire the forecast API to `model.pt` (or state plainly that it serves a
-  RandomForest) so the served and evaluated models agree.
-- Extract the shared DB and ERCOT client code into one importable module.
+Ordered by what would most improve the result.
+
+- **Forecast the tail.** Scarcity hours are where the money is and every
+  predictor is wrong by $600–700 on them. Reserve margin, forecast load and
+  wind, and outage data are the obvious missing features; a classifier for
+  "will this hour spike" may beat trying to predict its level.
+- **Add CI** so the 110 tests run on push rather than on request.
+- **Extract the shared DB and ERCOT client code** into one importable module;
+  `setup_database_connection()` is copy-pasted across roughly ten files.
+- **Monitoring** (PRD phase 7): latency and model metrics over time.
+- Verify the container build against a live Docker daemon.
 
 ## License
 

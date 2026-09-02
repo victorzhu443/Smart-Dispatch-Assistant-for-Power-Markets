@@ -65,11 +65,9 @@ def test_dashboard_page_loads(client):
     assert "chart" in body.lower(), "dashboard should render its forecast chart"
 
 
-def test_chat_page_loads(client):
-    response = client.get("/chat/")
-
-    assert response.status_code == 200
-    assert "Smart Dispatch Assistant" in response.content.decode()
+def test_removed_chat_route_is_gone(client):
+    """The LLM subsystem was removed; nothing should still route to it."""
+    assert client.get("/chat/").status_code == 404
 
 
 def test_dashboard_app_is_a_real_package():

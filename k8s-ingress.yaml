@@ -16,15 +16,3 @@ spec:
             name: forecast-service 
             port: 
               number: 80 
-      - path: /query 
-        pathType: Prefix 
-        backend: 
-          service: 
-            name: query-service 
-            port: 
-              number: 80 
-      - path: /chat 
-        pathType: Prefix 
-        backend: 
-          service: 
-            name: query-service 
