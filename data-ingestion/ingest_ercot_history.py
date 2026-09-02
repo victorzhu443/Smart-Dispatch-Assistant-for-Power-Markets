@@ -44,6 +44,8 @@ import pandas as pd
 import requests
 from sqlalchemy import create_engine, text
 
+import quality
+
 # ERCOT public MIS endpoints. Anonymous access; no API key.
 MIS_LIST_URL = "https://www.ercot.com/misapp/servlets/IceDocListJsonWS"
 MIS_DOWNLOAD_URL = "https://www.ercot.com/misdownload/servlets/mirDownload"
@@ -424,17 +426,19 @@ def main() -> int:
 
     print(f"Ingesting {years} for {args.hubs}")
 
+    engine = setup_database_connection()
+
     frames = []
     for year in years:
         path = download_archive(year, archives[year])
         raw = parse_archive(path, args.hubs)
         raw = to_utc_timestamps(raw)
-        validate(raw, f"{year} raw")
+        quality.timed_validate(engine, validate, raw, f"{year} raw",
+                               table="spp_raw_15min")
         print(f"  {year}: {len(raw):,} 15-minute records")
         frames.append(raw)
 
     raw_all = pd.concat(frames, ignore_index=True)
-    engine = setup_database_connection()
 
     raw_columns = [
         "timestamp_utc", "settlement_point", "settlement_point_type",
@@ -446,7 +450,8 @@ def main() -> int:
     print(f"spp_raw_15min: {raw_rows:,} rows total")
 
     hourly = to_hourly(raw_all)
-    validate(hourly, "hourly")
+    quality.timed_validate(engine, validate, hourly, "hourly",
+                           table="market_data_hourly")
     hourly_rows = write_table(hourly, engine=engine, table="market_data_hourly",
                               source_report=f"derived:spp_raw_15min")
     print(f"market_data_hourly: {hourly_rows:,} rows total")
@@ -461,7 +466,8 @@ def main() -> int:
             continue
         path = download_archive(year, dam_archives[year], prefix="DAMLZHBSPP")
         dam = dam_to_utc_timestamps(parse_dam_archive(path, args.hubs))
-        validate(dam, f"{year} day-ahead")
+        quality.timed_validate(engine, validate, dam, f"{year} day-ahead",
+                               table="dam_prices_hourly")
         print(f"  {year}: {len(dam):,} hourly records")
         dam_frames.append(dam)
 

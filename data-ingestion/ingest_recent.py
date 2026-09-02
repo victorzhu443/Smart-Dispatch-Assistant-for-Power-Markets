@@ -40,6 +40,7 @@ import requests
 
 # Sibling module: data-ingestion/ is on sys.path when this runs as a script.
 import ingest_ercot_history as base
+import quality
 
 # Report 12301: settlement point prices for one 15-minute interval, published
 # as it settles. Rolling window of about seven days.
@@ -220,7 +221,8 @@ def ingest_day_ahead(engine, hubs: list[str], days: int) -> int:
 
     dam = base.dam_to_utc_timestamps(pd.concat(frames, ignore_index=True))
     dam = dam.drop_duplicates(subset=["timestamp_utc", "settlement_point"])
-    base.validate(dam, "recent day-ahead")
+    quality.timed_validate(engine, base.validate, dam, "recent day-ahead",
+                           table="dam_prices_hourly")
 
     base.write_table(
         dam[["timestamp_utc", "settlement_point", "price"]],
@@ -276,7 +278,8 @@ def main() -> int:
 
     raw = base.to_utc_timestamps(pd.concat(frames, ignore_index=True))
     raw = raw.drop_duplicates(subset=["timestamp_utc", "settlement_point"])
-    base.validate(raw, "recent raw")
+    quality.timed_validate(engine, base.validate, raw, "recent raw",
+                           table="spp_raw_15min")
 
     raw_columns = ["timestamp_utc", "settlement_point", "settlement_point_type",
                    "price", "repeated_hour_flag"]
@@ -284,7 +287,8 @@ def main() -> int:
                      source_report=f"ercot-mis-{RECENT_REPORT_TYPE_ID}")
 
     hourly = base.to_hourly(raw)
-    base.validate(hourly, "recent hourly")
+    quality.timed_validate(engine, base.validate, hourly, "recent hourly",
+                           table="market_data_hourly")
     base.write_table(hourly, engine=engine, table="market_data_hourly",
                      source_report="derived:spp_raw_15min")
 

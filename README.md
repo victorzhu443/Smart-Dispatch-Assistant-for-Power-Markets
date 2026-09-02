@@ -197,6 +197,17 @@ make test
 README, which is how the feature matrix fell eight months behind the raw data:
 nothing enforced that it rebuild after ingestion.
 
+### Observing the pipeline
+
+```bash
+make quality       # freshness of every table + recent check history
+make check-fresh   # exits non-zero if anything is stale — the cron/alert target
+```
+
+Every validation writes one row to `data_quality_runs`, so pass/fail becomes a
+trend rather than a moment. A threshold catches a cliff; only history catches a
+drift.
+
 ### Generating the data and models
 
 `market_data.db`, `model.pt`, `market_embeddings.json` and `gpt2_dispatch_model/`

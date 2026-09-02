@@ -11,12 +11,20 @@ No network access: every test builds its own small frame.
 Run with:  pytest tests/ -v
 """
 import importlib.util
+import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+INGEST_DIR = REPO_ROOT / "data-ingestion"
+
+# The ingestion modules import each other by name, which only works when their
+# directory is on sys.path. It is not a package -- the hyphen makes
+# "data-ingestion" an invalid identifier -- so the path has to be added here.
+if str(INGEST_DIR) not in sys.path:
+    sys.path.insert(0, str(INGEST_DIR))
 
 
 def _load(relative_path, module_name):
