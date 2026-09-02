@@ -5,10 +5,12 @@ time-series features, trains a price forecaster, and exposes both a `/forecast`
 and a RAG-backed `/query` API behind a Django UI.
 
 This is a learning/portfolio build following the phased plan in [`PRD.md`](PRD.md).
-It is mid-rebuild, and the rebuild is working: the forecaster now trains on
+It is mid-rebuild, and the rebuild is working. The forecaster trains on
 **24 months of real ERCOT prices** and beats the day-ahead market by 8.6% under
 walk-forward validation, where the previous version trained on generated data
-and lost to a constant. It still cannot predict scarcity hours, which is the
+and lost to a constant. Turned into dispatch decisions, that edge captures
+**79.8% of the profit perfect foresight would earn** — 85% more than bidding
+off the day-ahead price. It still cannot predict scarcity hours, which is the
 next problem. The RAG fine-tuning result is real and is worse than its base model.
 See [Results](#results) and
 [Known limitations](#known-limitations); every number below is reproducible with
@@ -81,6 +83,51 @@ it scores almost identically to the training mean. The real baselines are in
 
 </details>
 
+### Dispatch decisions (Phase 8) — 79.8% of theoretically available profit
+
+The forecast only matters if it changes a decision. This simulates a 100 MW gas
+peaker at $45/MWh marginal cost and $5,000 per start over the same 13,182
+out-of-sample hours, charging a start cost on every off-to-on transition.
+
+```bash
+python forecasting-model/dispatch.py
+```
+
+Quantiles come from gradient boosting fit with pinball loss at P10/P50/P90,
+retrained monthly. **Calibration is checked, not assumed** — if the P90 only
+covered 70% of outcomes, every expected value built on it would be wrong:
+
+| Quantile | Nominal | Observed | Error |
+| --- | --- | --- | --- |
+| P10 | 10% | 12.3% | +2.3pp |
+| P50 | 50% | 50.6% | +0.6pp |
+| P90 | 90% | 87.3% | −2.7pp |
+
+| Strategy | Profit | vs perfect | Hours run | Starts |
+| --- | --- | --- | --- | --- |
+| Perfect foresight (ceiling) | $3,466,014 | 100.0% | 1,700 | 518 |
+| **Model — P50 threshold** | **$2,766,476** | **79.8%** | 1,460 | 487 |
+| Bidding off the day-ahead price | $1,494,104 | 43.1% | 1,897 | 521 |
+| Model — expected margin | $1,203,587 | 34.7% | 2,734 | 723 |
+| Model — P90 (aggressive) | $950,661 | 27.4% | 2,948 | 740 |
+| Never run | $0 | 0.0% | 0 | 0 |
+| Always run | −$18,654,296 | −538.2% | 13,182 | 1 |
+
+**A modest accuracy edge becomes a large economic one.** The model beats
+day-ahead by 8.6% on RMSE but by **85%** on realised profit. That is not a
+contradiction: dispatch is a threshold decision, so being right *near the
+threshold* matters enormously and being wrong in the middle of a distribution
+barely matters at all. It is the clearest argument in this project for scoring
+in dollars rather than RMSE.
+
+**The sophisticated rules lost to the simple one.** The expected-margin rule
+that uses the full P10/P50/P90 distribution earned $1.2M against the plain P50
+threshold's $2.8M, and the aggressive P90 rule did worse still. Both over-commit
+— 2,700–2,900 hours run against P50's 1,460 — and bleed the difference in start
+costs. The distribution is well calibrated; the decision rule built on it is
+simply too permissive. Tuning its threshold on this same data would be fitting
+to the evaluation set, so it is left as reported.
+
 ### RAG fine-tuning (Phase 4) — worse than the base model
 
 GPT-2 fine-tuned on ~100 dispatch Q&A pairs, evaluated against GPT-generated
@@ -116,7 +163,8 @@ task.
 | `frontend/` | 6 | Django project (`smart_ui`) with a `dashboard` app: Chart.js forecast page and chat page, proxying to the Flask APIs server-side to avoid CORS. |
 | `k8s-*.yaml` | 5.3 | Namespace, deployments, services and ingress for local minikube. |
 
-Phases 7 (monitoring) and 8 (dispatch simulation) from the PRD are not implemented.
+Phase 7 (monitoring) from the PRD is not implemented. Phase 8 (dispatch
+simulation) is covered by `forecasting-model/dispatch.py`.
 
 ## Setup
 
