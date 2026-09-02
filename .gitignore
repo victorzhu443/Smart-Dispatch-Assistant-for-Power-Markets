@@ -8,7 +8,6 @@ market_data.db
 model.pt
 forecast_model.pkl
 forecast_model.joblib
-gpt2_dispatch_model/
 
 # Cached ERCOT archives (~14MB/year, re-downloadable from the public MIS)
 data-ingestion/.ercot_cache/
