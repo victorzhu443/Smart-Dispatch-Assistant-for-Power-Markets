@@ -149,7 +149,7 @@ with real numbers, by the quantile forecast and dispatch rule above.
 
 | Path | Phase | Contents |
 | --- | --- | --- |
-| `data-ingestion/` | 1 | `ingest_ercot_history.py` (annual backfill, no credentials) and `ingest_recent.py` (cron top-up). Original `phase_1_*` ERCOT-API scripts and PJM/MISO ingesters retained. |
+| `data-ingestion/` | 1 | `schema.py` (DDL + migrations), `ingest_ercot_history.py` (annual backfill, no credentials), `ingest_recent.py` (cron top-up). |
 | `feature-engineering/` | 2 | SQL load → hourly resample → 24h sliding windows → technical features (mean, std, trend slope, moving averages, momentum) → `features` table. |
 | `forecasting-model/` | 3 | `backtest.py` (baselines), `walk_forward.py` (rolling validation), `train_model.py` (versioned quantile artifact), `dispatch.py` (decisions in dollars), plus the original `PowerMarketLSTM` phase scripts. |
 | `backend/` | 5 | `phase_5_1_forecast_api.py` — serves the quantile model and dispatch call on port 5001, with provenance and a fallback ladder. Docker and minikube deploy scripts. |
@@ -179,6 +179,23 @@ cp .env.example .env                      # then fill in your credentials
 API subscription (free, from <https://apiexplorer.ercot.com/>) is needed to ingest
 new data. Every pipeline script attempts PostgreSQL first and silently falls back
 to a local SQLite file, so Postgres is optional for local work.
+
+### Running the pipeline
+
+`make help` lists every target. The dependencies are encoded, so `make features`
+cannot run against data that has not been ingested:
+
+```bash
+make backfill    # schema -> annual archives
+make ingest      # schema -> rolling 15-minute feed  (the cron target)
+make features    # ingest -> rebuild the feature matrix
+make train       # features -> retrain if the model is >7 days behind
+make test
+```
+
+`make all` runs the chain end to end. Run order previously lived only in this
+README, which is how the feature matrix fell eight months behind the raw data:
+nothing enforced that it rebuild after ingestion.
 
 ### Generating the data and models
 
@@ -331,8 +348,9 @@ Ordered by how much they'd need fixing before this is more than a demo.
 9. **Heavy duplication across phase scripts.** `setup_database_connection()` and
    the whole `ERCOTClient` class are copy-pasted verbatim into roughly ten files;
    a change to the auth flow means ten edits.
-10. **No CI.** 110 tests exist and pass locally (`pytest tests/ -v`), but
-    nothing runs them automatically on push.
+10. ~~**No CI.**~~ **Fixed.** GitHub Actions runs the suite on every push and
+    pull request across Python 3.10 and 3.12, byte-compiles every tracked
+    file, and verifies the schema applies to an empty database.
 
 ## Next steps
 
