@@ -227,6 +227,62 @@ class ForecastService:
 
         return {"forecast": quantiles, "model": "quantile_gbm", "degraded": False}
 
+    def predict_range(self, start: pd.Timestamp, hours: int) -> list[dict]:
+        """Quantiles for a run of consecutive hours.
+
+        Builds features once across the whole window and predicts in one batch,
+        rather than repeating 200 hours of history lookup per hour.
+        """
+        end = start + pd.Timedelta(hours=hours - 1)
+        window = self._window(end)
+        if window.empty:
+            raise LookupError(f"no price history for {self.hub} near {start}")
+
+        feat = wf.build_features(window)
+        targets = feat[
+            (feat["timestamp_utc"] >= start) & (feat["timestamp_utc"] <= end)
+        ]
+        if targets.empty:
+            raise LookupError(
+                f"no hours between {start.isoformat()} and {end.isoformat()} "
+                f"are present for {self.hub}"
+            )
+
+        if self.artifact is None:
+            out = []
+            for ts in targets["timestamp_utc"]:
+                try:
+                    result = self._seasonal_naive(feat, ts)
+                    result["timestamp"] = ts
+                    out.append(result)
+                except LookupError:
+                    continue
+            return out
+
+        usable = targets.dropna(subset=self.artifact["feature_names"])
+        if usable.empty:
+            raise LookupError(
+                f"features not computable for any hour in the requested range; "
+                f"needs {HISTORY_HOURS}h of prior history"
+            )
+
+        X = usable[self.artifact["feature_names"]].to_numpy()
+        predictions = {
+            f"p{int(q * 100)}": model.predict(X)
+            for q, model in self.artifact["models"].items()
+        }
+
+        out = []
+        for i, ts in enumerate(usable["timestamp_utc"]):
+            ordered = sorted(float(predictions[k][i]) for k in ("p10", "p50", "p90"))
+            out.append({
+                "timestamp": ts,
+                "forecast": dict(zip(["p10", "p50", "p90"], ordered)),
+                "model": "quantile_gbm",
+                "degraded": False,
+            })
+        return out
+
     def _seasonal_naive(self, feat: pd.DataFrame, target: pd.Timestamp) -> dict:
         """Fallback when no artifact is loadable.
 
@@ -373,6 +429,88 @@ def forecast_endpoint():
         "currency": "USD/MWh",
         "recommendation": recommend(result["forecast"], marginal_cost),
         "provenance": _provenance(result, data_age),
+        "generated_at": now.isoformat(),
+    })
+
+
+MAX_RANGE_HOURS = 168
+
+
+@app.route("/forecast/range", methods=["GET"])
+def forecast_range_endpoint():
+    """Consecutive hours in one call, for charting a forecast band."""
+    if service.engine is None:
+        return jsonify({"error": "database unavailable"}), 503
+
+    try:
+        hours = int(request.args.get("hours", 24))
+        marginal_cost = float(request.args.get("marginal_cost",
+                                               DEFAULT_MARGINAL_COST))
+    except ValueError:
+        return jsonify({
+            "error": "hours and marginal_cost must be numbers",
+        }), 422
+
+    if not 1 <= hours <= MAX_RANGE_HOURS:
+        return jsonify({
+            "error": f"hours must be between 1 and {MAX_RANGE_HOURS}",
+            "received": hours,
+        }), 422
+
+    latest = service.latest_data_time()
+    if latest is None:
+        return jsonify({
+            "error": "no market data available",
+            "detail": "run data-ingestion/ingest_ercot_history.py",
+        }), 503
+
+    raw_start = (request.args.get("start") or "").strip()
+    if raw_start:
+        try:
+            start = pd.Timestamp(raw_start)
+            start = (start.tz_localize("UTC") if start.tzinfo is None
+                     else start.tz_convert("UTC"))
+        except Exception:
+            return jsonify({
+                "error": "invalid start",
+                "expected": "ISO-8601, e.g. 2025-12-15T00:00:00Z",
+                "received": raw_start,
+            }), 422
+    else:
+        # Default to the most recent full window that the data can support.
+        start = latest - pd.Timedelta(hours=hours - 1)
+
+    try:
+        predictions = service.predict_range(start, hours)
+    except LookupError as exc:
+        return jsonify({
+            "error": "forecast not available for that range",
+            "detail": str(exc),
+            "latest_available": latest.isoformat(),
+        }), 422
+
+    now = datetime.now(timezone.utc)
+    data_age = (now - latest.to_pydatetime()).total_seconds() / 3600
+
+    hours_out = [{
+        "timestamp": p["timestamp"].isoformat(),
+        "forecast": {k: round(v, 2) for k, v in p["forecast"].items()},
+        "recommendation": recommend(p["forecast"], marginal_cost),
+    } for p in predictions]
+
+    degraded = any(p["degraded"] for p in predictions)
+    model_name = predictions[0]["model"] if predictions else None
+
+    return jsonify({
+        "hub": service.hub,
+        "start": start.isoformat(),
+        "hours": len(hours_out),
+        "marginal_cost": marginal_cost,
+        "currency": "USD/MWh",
+        "series": hours_out,
+        "provenance": _provenance(
+            {"model": model_name, "degraded": degraded}, data_age
+        ),
         "generated_at": now.isoformat(),
     })
 

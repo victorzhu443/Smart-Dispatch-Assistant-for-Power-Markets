@@ -113,7 +113,7 @@ task.
 | `forecasting-model/` | 3 | `PowerMarketLSTM` in PyTorch: load features, define architecture, train, evaluate RMSE vs. baselines, serialize to `model.pt`. |
 | `llm_rag/` | 4 | SentenceTransformers embeddings → `market_embeddings.json`, GPT-2 fine-tuning, retrieval `/query` endpoint, perplexity evaluation. |
 | `backend/` | 5 | Flask services: `phase_5_1_forecast_api.py` (port 5001) and `phase_5_2_minimal.py` / `phase_5_2_query_api.py` (port 5002), plus Docker and minikube deploy scripts. |
-| `frontend/` | 6 | Django project (`smart_ui`) with a `dashboard` app: Chart.js forecast page and chat page, proxying to the Flask APIs server-side to avoid CORS. |
+| `frontend/` | 6 | Django project (`smart_ui`) with a `dashboard` app: the dispatch outlook (P10–P90 band, marginal-cost line, per-hour run/hold call) and a chat page, proxying to the Flask APIs server-side to avoid CORS. |
 | `k8s-*.yaml` | 5.3 | Namespace, deployments, services and ingress for local minikube. |
 
 Phases 7 (monitoring) and 8 (dispatch simulation) from the PRD are not implemented.
@@ -185,6 +185,17 @@ version, the training cutoff, and whether any fallback was engaged:
   "data_age_hours": 5856.1
 }
 ```
+
+The Django UI reads the same API:
+
+```bash
+cd frontend && python manage.py runserver    # http://localhost:8000
+```
+
+The dashboard draws the **P10–P90 band with the marginal-cost line across it**,
+colours each hour by the dispatch call, and lets you change the marginal cost to
+see the call move. If the API is serving a fallback, the page says so in a banner
+rather than presenting degraded numbers as a model output.
 
 ### Fallback policy — degrade visibly, never invent
 
