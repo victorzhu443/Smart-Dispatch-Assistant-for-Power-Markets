@@ -11,6 +11,20 @@ from sqlalchemy.exc import SQLAlchemyError
 
 load_dotenv()
 
+# Minimum real hourly observations needed to build 24-hour windows plus a
+# target. Below this the pipeline stops rather than padding the series.
+MIN_HOURLY_POINTS = 75
+
+
+class InsufficientDataError(RuntimeError):
+    """Not enough real market data to continue.
+
+    This used to be handled by generating prices to fill the gap, which meant
+    every downstream figure described a random walk instead of the market.
+    Failing here is the point: ingest more history, never fabricate it.
+    """
+
+
 def setup_database_connection():
     """Setup database connection"""
     try:
@@ -69,80 +83,20 @@ def prepare_hourly_data(df):
     df_hub.set_index('timestamp', inplace=True)
     df_hourly = df_hub.resample('1h')['price'].mean().reset_index()
     
-    # Fill any missing hours and extend if needed
-    df_hourly['price'] = df_hourly['price'].fillna(method='ffill').fillna(method='bfill')
-    
-    # Extend dataset if insufficient
-    if len(df_hourly) < 75:
-        df_hourly = extend_hourly_data(df_hourly, 75)
-    
+    # Fill isolated missing hours only; a long run of NaNs means the ingest is
+    # incomplete and is caught by the length check below.
+    df_hourly['price'] = df_hourly['price'].ffill().bfill()
+
+    if len(df_hourly) < MIN_HOURLY_POINTS:
+        raise InsufficientDataError(
+            f"Need {MIN_HOURLY_POINTS} hourly observations to build 24-hour "
+            f"windows, have {len(df_hourly)} for settlement point "
+            f"{top_settlement!r}. Ingest more history -- see the README section "
+            f"'Generating the data and models'. Do not pad the series."
+        )
+
     print(f"✅ Created {len(df_hourly)} hourly price points")
     return df_hourly
-
-def extend_hourly_data(df_hourly, target_length):
-    """Extend hourly data to meet minimum requirements"""
-    if len(df_hourly) == 0:
-        # Create completely synthetic data
-        start_time = datetime.now() - timedelta(hours=target_length)
-        timestamps = pd.date_range(start=start_time, periods=target_length, freq='1h')
-        
-        # Generate realistic price patterns
-        np.random.seed(42)
-        base_price = 40.0
-        prices = []
-        
-        for i, ts in enumerate(timestamps):
-            hour_of_day = ts.hour
-            day_of_week = ts.weekday()
-            
-            peak_multiplier = 1.4 if 14 <= hour_of_day <= 18 else 1.0
-            weekend_multiplier = 0.9 if day_of_week >= 5 else 1.0
-            
-            random_variation = np.random.normal(0, 5)
-            seasonal_trend = 10 * np.sin(i * 0.1)
-            
-            price = base_price * peak_multiplier * weekend_multiplier + random_variation + seasonal_trend
-            price = max(15.0, min(150.0, price))
-            prices.append(round(price, 2))
-        
-        df_extended = pd.DataFrame({
-            'timestamp': timestamps,
-            'price': prices
-        })
-    
-    else:
-        # Extend existing data
-        last_time = df_hourly['timestamp'].max()
-        last_price = df_hourly['price'].iloc[-1]
-        
-        additional_needed = target_length - len(df_hourly)
-        
-        additional_times = pd.date_range(
-            start=last_time + timedelta(hours=1),
-            periods=additional_needed,
-            freq='1h'
-        )
-        
-        np.random.seed(42)
-        additional_prices = []
-        
-        for i, ts in enumerate(additional_times):
-            price_drift = np.random.normal(0, 3)
-            hour_effect = 5 * np.sin(ts.hour * np.pi / 12)
-            
-            price = last_price + price_drift + hour_effect
-            price = max(15.0, min(150.0, price))
-            additional_prices.append(round(price, 2))
-            last_price = price
-        
-        df_additional = pd.DataFrame({
-            'timestamp': additional_times,
-            'price': additional_prices
-        })
-        
-        df_extended = pd.concat([df_hourly, df_additional], ignore_index=True)
-    
-    return df_extended
 
 def generate_sliding_windows(df_hourly, window_size=24):
     """Generate sliding windows from hourly data"""

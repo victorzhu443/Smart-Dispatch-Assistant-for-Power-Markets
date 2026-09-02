@@ -10,6 +10,16 @@ from sqlalchemy.exc import SQLAlchemyError
 
 load_dotenv()
 
+
+class InsufficientDataError(RuntimeError):
+    """Not enough real market data to continue.
+
+    This used to be handled by generating prices to fill the gap, which meant
+    every downstream figure described a random walk instead of the market.
+    Failing here is the point: ingest more history, never fabricate it.
+    """
+
+
 class ERCOTClient:
     def __init__(self, username, password, subscription_key):
         self.username = username
@@ -168,8 +178,11 @@ def expand_dataset_for_testing(engine, table_name="market_data"):
     subscription_key = os.getenv('ERCOT_API_SUBSCRIPTION_KEY')
     
     if not all([username, password, subscription_key]):
-        print("❌ Missing ERCOT credentials for data expansion!")
-        return simulate_historical_data(engine, table_name)
+        raise InsufficientDataError(
+            "Not enough rows in the database and no ERCOT credentials available "
+            "to fetch more. Set ERCOT_API_USERNAME, ERCOT_API_PASSWORD and "
+            "ERCOT_API_SUBSCRIPTION_KEY in .env (see .env.example)."
+        )
     
     try:
         # Get more data from ERCOT API
@@ -208,75 +221,13 @@ def expand_dataset_for_testing(engine, table_name="market_data"):
         
         return df_combined
         
+    except InsufficientDataError:
+        raise
     except Exception as e:
-        print(f"⚠️ API expansion failed: {e}")
-        return simulate_historical_data(engine, table_name)
-
-def simulate_historical_data(engine, table_name="market_data"):
-    """Simulate historical data for testing purposes"""
-    print(f"🔄 Simulating historical data for testing...")
-    
-    # Create simulated data with realistic patterns
-    np.random.seed(42)  # For reproducible results
-    
-    # Generate timestamps for past 7 days, every 5 minutes
-    end_time = datetime.now()
-    start_time = end_time - timedelta(days=7)
-    
-    # Create 5-minute intervals
-    timestamps = pd.date_range(start=start_time, end=end_time, freq='5min')
-    
-    # Select a few representative settlement points
-    settlement_points = ['HB_NORTH', 'HB_SOUTH', 'HB_WEST', 'HOUSTON', 'DALLAS']
-    
-    # Generate realistic pricing data
-    simulated_data = []
-    base_price = 35.0  # Base price around $35/MWh
-    
-    for i, timestamp in enumerate(timestamps):
-        for point in settlement_points:
-            # Add time-based patterns (higher during peak hours)
-            hour = timestamp.hour
-            peak_multiplier = 1.5 if 14 <= hour <= 18 else 1.0  # Peak afternoon hours
-            weekend_multiplier = 0.8 if timestamp.weekday() >= 5 else 1.0
-            
-            # Add some randomness and trends
-            price_variation = np.random.normal(0, 5)  # Random variation
-            time_trend = np.sin(i * 0.01) * 10  # Longer-term cycles
-            
-            price = base_price * peak_multiplier * weekend_multiplier + price_variation + time_trend
-            price = max(15.0, min(200.0, price))  # Reasonable bounds
-            
-            simulated_data.append([
-                timestamp,
-                False,  # repeat_hour_flag
-                point,
-                round(price, 2)
-            ])
-    
-    # Create DataFrame
-    columns = ['timestamp', 'repeat_hour_flag', 'settlement_point', 'price']
-    df_sim = pd.DataFrame(simulated_data, columns=columns)
-    
-    print(f"✅ Generated {len(df_sim)} simulated records")
-    
-    # Save to database
-    df_sim.to_sql(table_name, engine, if_exists='replace', index=False, method='multi')
-    print(f"✅ Saved simulated data to database")
-    
-    # Verify test case
-    test_passed = len(df_sim) > 1000
-    print(f"\n🧪 Test Case - Resulting DataFrame has > 1000 rows:")
-    print(f"   Simulated rows: {len(df_sim)}")
-    print(f"   Result: {'✅ PASSED' if test_passed else '❌ FAILED'}")
-    
-    print(f"\n📊 Simulated Data Summary:")
-    print(f"   Time range: {df_sim['timestamp'].min()} to {df_sim['timestamp'].max()}")
-    print(f"   Unique timestamps: {df_sim['timestamp'].nunique()}")
-    print(f"   Settlement points: {df_sim['settlement_point'].nunique()}")
-    print(f"   Price range: ${df_sim['price'].min():.2f} - ${df_sim['price'].max():.2f}")
-    
-    return df_sim
+        raise InsufficientDataError(
+            f"Not enough rows in the database and the ERCOT API call to fetch "
+            f"more failed: {e}"
+        ) from e
 
 def main():
     """Execute Phase 2.1 workflow"""

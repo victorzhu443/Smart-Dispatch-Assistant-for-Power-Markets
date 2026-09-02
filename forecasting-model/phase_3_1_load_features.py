@@ -10,7 +10,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
 
 load_dotenv()
 
@@ -144,22 +143,30 @@ def prepare_ml_data(df_features):
     
     return X, y, price_sequences, feature_cols
 
-def create_train_test_split(X, y, price_sequences=None, test_size=0.2, random_state=42):
-    """Create train/test split for ML training"""
-    print(f"🔄 Creating train/test split (test_size={test_size})...")
-    
+def create_train_test_split(X, y, price_sequences=None, test_size=0.2):
+    """Split chronologically: the test set is the most recent `test_size` share.
+
+    Rows arrive ordered by window_id, which the feature builder assigns in
+    time order, so slicing off the tail is a time-based split.
+
+    This deliberately does not shuffle. A shuffled split on a time series lets
+    the model train on later hours and be scored on earlier ones, so it sees
+    the future and every score it produces is inflated.
+    """
+    print(f"🔄 Creating chronological train/test split (test_size={test_size})...")
+
+    split_idx = int(len(X) * (1 - test_size))
+    if split_idx < 1 or split_idx >= len(X):
+        raise ValueError(f"Cannot split {len(X)} samples at test_size={test_size}")
+
+    X_train, X_test = X[:split_idx], X[split_idx:]
+    y_train, y_test = y[:split_idx], y[split_idx:]
+
     if price_sequences is not None:
-        # Split all data together
-        X_train, X_test, y_train, y_test, seq_train, seq_test = train_test_split(
-            X, y, price_sequences, test_size=test_size, random_state=random_state
-        )
+        seq_train, seq_test = price_sequences[:split_idx], price_sequences[split_idx:]
     else:
-        # Split just features and targets
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state
-        )
         seq_train, seq_test = None, None
-    
+
     print(f"✅ Train/test split created:")
     print(f"   Training samples: {len(X_train)}")
     print(f"   Test samples: {len(X_test)}")
@@ -250,7 +257,7 @@ def main():
         
         # Step 4: Create train/test split
         X_train, X_test, y_train, y_test, seq_train, seq_test = create_train_test_split(
-            X, y, price_sequences, test_size=0.2, random_state=42
+            X, y, price_sequences, test_size=0.2
         )
         
         # Step 5: Scale features
