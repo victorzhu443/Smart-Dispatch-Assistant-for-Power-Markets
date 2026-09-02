@@ -5,34 +5,49 @@ time-series features, trains a price forecaster, and exposes both a `/forecast`
 and a RAG-backed `/query` API behind a Django UI.
 
 This is a learning/portfolio build following the phased plan in [`PRD.md`](PRD.md).
-The data pipeline and the forecast service work. **The two ML results do not beat
-their baselines, and the Django UI does not currently start** — see
-[Results](#results) and [Known limitations](#known-limitations). Those numbers are
-reproducible with the commands given below.
+It is mid-rebuild. **The forecasting pipeline deliberately refuses to run on the
+current database** — there is only five minutes of real market data, and it now
+fails loudly rather than padding the gap with generated prices, which is what it
+used to do. The RAG fine-tuning result is real and is worse than its base model.
+The Django UI does not start. See [Results](#results) and
+[Known limitations](#known-limitations); every number below is reproducible with
+the command next to it.
 
 ## Results
 
-### Price forecasting (Phase 3) — trained on synthetic data, does not beat baseline
+### Price forecasting (Phase 3) — no current result
 
-**Read this before quoting any forecasting number from this repo.** The database
-holds 2,100 rows, but they span **two timestamps five minutes apart** across 1,034
-settlement points. Feature engineering filters to a single hub, which leaves *one*
-real hourly price point. `extend_hourly_data()` in
-`feature-engineering/phase_2_4_feature_matrix_sql.py` then pads that up to 75
-points with a seeded random walk (`last_price + N(0,3) + 5·sin(hour)`).
+**The pipeline does not currently produce a forecasting number, by design.**
+There is not enough real data to train on, and it now says so instead of
+inventing the difference.
 
-So **74 of 75 hourly points — and all 51 training windows — are synthetic.** The
-`features` table's Aug 1–3 timestamps come from `datetime.now()` at generation
-time, which is why they do not match the Jul 31 raw data. The forecasting result
-below measures how well an LSTM fits a random walk, not how well it predicts
-ERCOT prices.
+The database holds 2,100 rows, but they span **two timestamps five minutes
+apart** across 1,034 settlement points. Feature engineering filters to a single
+hub, which leaves *one* real hourly price point — far below the 75 needed to
+build 24-hour windows. Running either stage fails loudly:
 
-The LSTM is trained for 5 epochs on those **51 sliding windows** (40 train / 11
-test). Reproduce with:
+```console
+$ python feature-engineering/phase_2_4_feature_matrix_sql.py
+InsufficientDataError: Need 75 hourly observations to build 24-hour windows,
+have 1 for settlement point '7RNCHSLR_ALL'.
 
-```bash
-python forecasting-model/phase_3_4_evaluate_rmse.py
+$ python forecasting-model/phase_3_4_evaluate_rmse.py
+InsufficientDataError: Refusing to train on 51 feature windows; 1000 required.
 ```
+
+Restoring a real number requires ingesting real history, not changing the model.
+
+<details>
+<summary><strong>The result this replaced, and why it was withdrawn</strong></summary>
+
+Until the M0 fix, `extend_hourly_data()` padded that single real observation up
+to 75 points with a seeded random walk (`last_price + N(0,3) + 5·sin(hour)`), so
+**74 of 75 hourly points — and all 51 training windows — were synthetic.** The
+`features` table's Aug 1–3 timestamps came from `datetime.now()` at generation
+time, which is why they never matched the Jul 31 raw data.
+
+The LSTM trained for 5 epochs on those 51 windows scored as follows — a measure
+of how well it fit a random walk, not of anything about ERCOT prices:
 
 | Predictor | RMSE | Beats model? |
 | --- | --- | --- |
@@ -41,16 +56,19 @@ python forecasting-model/phase_3_4_evaluate_rmse.py
 | Last-hour baseline | $13.22 | yes |
 
 Across four runs the model scored $19.97, $38.21, $29.59 and $26.67, with R²
-between −1.60 and −8.53. A negative R² means the model does worse than always
-predicting the training mean. The baselines are identical every run because the
-train/test split is seeded (`random_state=42`); the model's spread comes from
-training being unseeded, so a single run is not a meaningful number to quote.
+between −1.60 and −8.53. A negative R² means it did worse than always predicting
+the training mean. The baselines were identical every run because the split was
+seeded; the model's spread came from training being unseeded, so no single run
+was a meaningful number to quote.
 
-The failure mode is visible in the per-sample output: predictions collapse into a
-narrow $18–$23 band while actuals range $18–$56, giving a −$16 mean bias. With 40
-training samples and 57,441 parameters, the model has nowhere near enough data to
-learn anything — and the increments it is being asked to learn are drawn from
-`N(0, 3)`, which is unlearnable by construction.
+Predictions collapsed into a narrow $18–$23 band while actuals ranged $18–$56, a
+−$16 mean bias. With 40 training samples and 57,441 parameters there was nothing
+to learn — and the increments it was asked to learn were drawn from `N(0, 3)`,
+unlearnable by construction. The split was also shuffled, so the model was
+scored on hours that preceded ones it trained on; that leakage *inflates*
+scores, and it still lost to a constant.
+
+</details>
 
 ### RAG fine-tuning (Phase 4) — worse than the base model
 
@@ -146,59 +164,69 @@ Kubernetes (minikube) deployment: `bash backend/deploy_k8s.sh`.
 
 Ordered by how much they'd need fixing before this is more than a demo.
 
-1. **The pipeline silently substitutes synthetic data when real data is thin.**
-   Documented above and the most serious issue here. Every feature-engineering
-   script carries an `extend_hourly_data()` / `simulate_historical_data()` path
-   that fabricates random-walk prices when the real pull is too small, and it
-   fires without failing or flagging the output — the `features` table looks
-   identical whether it holds real or generated prices. This is what makes the
-   forecasting result meaningless rather than merely bad. The pipeline should
-   fail loudly on insufficient data, or at minimum tag generated rows so
-   downstream consumers can tell the difference.
-2. **Only five minutes of real market data was ever ingested.** The
+1. ~~**The pipeline silently substitutes synthetic data when real data is
+   thin.**~~ **Fixed.** Every feature-engineering script carried an
+   `extend_hourly_data()` / `simulate_historical_data()` path that fabricated
+   random-walk prices when the real pull was too small, and it fired without
+   failing or flagging the output — the `features` table looked identical
+   whether it held real or generated prices. Those 279 lines are removed; the
+   pipeline now raises `InsufficientDataError` with the actual and required row
+   counts, and the Phase 3 scripts refuse to train on fewer than 1,000 windows.
+2. ~~**The train/test split leaked future data.**~~ **Fixed.** Every Phase 3
+   script called `train_test_split()` without `shuffle=False`, so a time series
+   was randomly shuffled and the model was scored on hours preceding ones it
+   trained on. Now a chronological split, asserted in
+   `tests/test_chronological_split.py`.
+3. **Only five minutes of real market data was ever ingested.** The
    `market_data` table covers two timestamps (`2025-07-31 00:25:10` and
    `00:30:10`). The Phase 1 scripts pull with `size=100`–`1000` in a single
    request and were run once; there is no scheduled ingestion (PRD step 1.6 is
    unimplemented), so history never accumulated.
-3. **Neither ML result beats its baseline.** Both are documented above. For the
-   forecaster the cause is issues 1 and 2; for the LLM it is ~100 Q&A pairs,
+4. **Neither ML result beat its baseline.** Both are documented above. For the
+   forecaster the cause was issues 1 and 2; for the LLM it is ~100 Q&A pairs,
    which is far too few to fine-tune on without catastrophic degradation.
-4. **The Django UI does not start.** `manage.py` and `settings.py` reference a
+5. **The Django UI does not start.** `manage.py` and `settings.py` reference a
    `smartui` module while the package directory is `smart_ui`, giving
    `ModuleNotFoundError: No module named 'smartui'`. Correcting that surfaces a
    second problem: `frontend/dashboard/` has no `__init__.py`, so Django raises
    `ImproperlyConfigured`. `smart_ui/urls.py` also imports `views` from its own
    package, but the views live in `dashboard/views.py`. PRD test case 6.1
    ("localhost:8000 loads basic UI") therefore does not pass.
-5. **The forecast API does not use the trained LSTM.** `phase_5_1_forecast_api.py`
+6. **The forecast API does not use the trained LSTM.** `phase_5_1_forecast_api.py`
    trains its own `RandomForestRegressor` at startup and falls back to a
    mean-price constant if that fails. `model.pt` is only loaded by
    `model_usage_example.py`. The served forecast and the evaluated model are two
    different things.
-6. **The forecast API's features are mostly hardcoded.** `predict_price()` passes
+7. **The forecast API's features are mostly hardcoded.** `predict_price()` passes
    fixed values for `price_mean`, `price_std`, `trend_slope` and momentum, varying
    only the time-derived features, then applies hand-tuned peak/off-peak
    multipliers. It is closer to a time-of-day heuristic than a learned model.
-7. **`docker-compose.yml` cannot build.** It specifies `dockerfile: Dockerfile`,
+8. **`docker-compose.yml` cannot build.** It specifies `dockerfile: Dockerfile`,
    but the file in the repo is named `Dockerfile.txt`.
-8. **Heavy duplication across phase scripts.** `setup_database_connection()` and
+9. **Heavy duplication across phase scripts.** `setup_database_connection()` and
    the whole `ERCOTClient` class are copy-pasted verbatim into roughly ten files;
    a change to the auth flow means ten edits.
-9. **No automated tests.** Each phase script self-checks by printing its own
-   PASS/FAIL to stdout; there is no test runner, and `pytest` in
-   `requirements.txt` is unused.
-10. **Pinecone is not used.** Phase 4.1 writes embeddings to a local
+10. **Test coverage is one module deep.** `tests/test_chronological_split.py`
+   covers the train/test split; everything else still "self-tests" by printing
+   its own PASS/FAIL to stdout, which passes just as happily on fabricated data.
+   Data-validation and pipeline tests are the gap. Run what exists with
+   `pytest tests/ -v`.
+11. **Pinecone is not used.** Phase 4.1 writes embeddings to a local
    `market_embeddings.json` and retrieval does an in-memory cosine similarity,
    despite the PRD specifying a vector store.
 
 ## Next steps
 
-- Make the synthetic-data fallback fail loudly instead of silently padding, or
-  add an `is_synthetic` column so no result can be reported without knowing what
-  it was computed on. Nothing else on this list matters until this is done.
-- Implement scheduled ingestion (PRD step 1.6) and accumulate real ERCOT history,
-  then re-run Phases 2–3. Only then is the forecasting number worth reading.
-- Seed torch's RNG in the training scripts so runs are comparable.
+- ~~Make the synthetic-data fallback fail loudly instead of silently padding.~~
+  Done — the pipeline now raises `InsufficientDataError`.
+- ~~Seed torch's RNG so runs are comparable.~~ Done.
+- **Ingest real ERCOT history.** This is the only thing that unblocks a real
+  forecasting result. Target 24 months of hourly settlement point prices for a
+  handful of hubs, plus scheduled ingestion (PRD step 1.6), then re-run
+  Phases 2–3.
+- Build a walk-forward backtest and baseline set (persistence, seasonal-naive,
+  and the day-ahead price) *before* tuning any model, so improvements can be
+  distinguished from noise.
 - Fix the Django package naming and add the missing `__init__.py` so Phase 6 runs.
 - Wire the forecast API to `model.pt` (or state plainly that it serves a
   RandomForest) so the served and evaluated models agree.
