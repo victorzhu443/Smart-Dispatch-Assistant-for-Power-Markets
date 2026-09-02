@@ -10,6 +10,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 load_dotenv()
 
+# ERCOT trading hub to model. HB_HOUSTON is the most liquid.
+DEFAULT_HUB = "HB_HOUSTON"
+
+# Minimum real hourly observations needed to build 24-hour windows.
+MIN_HOURLY_POINTS = 75
+
 
 class InsufficientDataError(RuntimeError):
     """Not enough real market data to continue.
@@ -47,45 +53,58 @@ def setup_database_connection():
         print(f"✅ SQLite connection successful: {sqlite_path}")
         return engine, "sqlite"
 
-def load_data_from_sql(engine, table_name="market_data"):
-    """Load data from SQL table"""
-    print(f"📊 Loading data from SQL table '{table_name}'...")
-    
-    query = f"""
-    SELECT timestamp, settlement_point, price
-    FROM {table_name}
-    ORDER BY timestamp, settlement_point
+def load_data_from_sql(engine, table_name="market_data_hourly", hub=DEFAULT_HUB):
+    """Load the hourly price series for one settlement point.
+
+    Reads market_data_hourly, written by
+    data-ingestion/ingest_ercot_history.py. The older market_data table held
+    5-minute snapshots across ~1,000 nodes at a single instant, which is a
+    cross-section rather than a time series and cannot be modelled.
     """
-    
-    df = pd.read_sql(query, engine)
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    
-    print(f"✅ Loaded {len(df)} records from database")
+    print(f"Loading hourly prices for {hub} from '{table_name}'...")
+
+    query = text(
+        f"SELECT timestamp_utc AS timestamp, settlement_point, price "
+        f"FROM {table_name} WHERE settlement_point = :hub "
+        f"ORDER BY timestamp_utc"
+    )
+    df = pd.read_sql(query, engine, params={"hub": hub})
+
+    if df.empty:
+        raise InsufficientDataError(
+            f"No rows in {table_name} for {hub!r}. Run "
+            f"'python data-ingestion/ingest_ercot_history.py' first, or pass a "
+            f"different --hub."
+        )
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, format="mixed")
+    print(f"Loaded {len(df):,} hourly records for {hub}")
     return df
 
+
 def prepare_hourly_data(df):
-    """Convert 5-minute data to hourly averages for sliding windows"""
-    print(f"🔄 Converting 5-minute data to hourly averages...")
-    
-    # Focus on a major trading hub for simplicity
-    # Find the most common settlement point (likely a major hub)
-    top_settlement = df['settlement_point'].value_counts().index[0]
-    print(f"📍 Using settlement point: {top_settlement}")
-    
-    # Filter to single settlement point and create hourly data
-    df_hub = df[df['settlement_point'] == top_settlement].copy()
-    
-    # Set timestamp as index and resample to hourly
-    df_hub.set_index('timestamp', inplace=True)
-    df_hourly = df_hub.resample('1H')['price'].mean().reset_index()
-    
-    # Fill any missing hours
-    df_hourly['price'] = df_hourly['price'].fillna(method='ffill').fillna(method='bfill')
-    
-    print(f"✅ Created {len(df_hourly)} hourly price points")
-    print(f"⏱️ Time range: {df_hourly['timestamp'].min()} to {df_hourly['timestamp'].max()}")
-    print(f"💰 Price range: ${df_hourly['price'].min():.2f} - ${df_hourly['price'].max():.2f}")
-    
+    """Validate the already-hourly series. No resampling: the ingestion
+    already averaged 15-minute intervals into hours."""
+    hub = df["settlement_point"].iloc[0]
+    df_hourly = (
+        df[["timestamp", "price"]]
+        .sort_values("timestamp")
+        .reset_index(drop=True)
+    )
+
+    gaps = df_hourly["timestamp"].diff().dropna()
+    irregular = gaps[gaps != pd.Timedelta(hours=1)]
+    if len(irregular):
+        print(f"  note: {len(irregular)} breaks in hourly continuity")
+
+    if len(df_hourly) < MIN_HOURLY_POINTS:
+        raise InsufficientDataError(
+            f"Need {MIN_HOURLY_POINTS} hourly observations to build 24-hour "
+            f"windows, have {len(df_hourly)} for {hub!r}. Ingest more history; "
+            f"do not pad the series."
+        )
+
+    print(f"{len(df_hourly):,} hourly price points for {hub}")
     return df_hourly
 
 def generate_sliding_windows(df_hourly, window_size=24):
