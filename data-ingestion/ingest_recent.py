@@ -225,6 +225,7 @@ def ingest_day_ahead(engine, hubs: list[str], days: int) -> int:
     base.write_table(
         dam[["timestamp_utc", "settlement_point", "price"]],
         engine=engine, table="dam_prices_hourly",
+        source_report=f"ercot-mis-{RECENT_DAM_REPORT_TYPE_ID}",
     )
     return len(dam)
 
@@ -279,11 +280,13 @@ def main() -> int:
 
     raw_columns = ["timestamp_utc", "settlement_point", "settlement_point_type",
                    "price", "repeated_hour_flag"]
-    base.write_table(raw[raw_columns], engine=engine, table="spp_raw_15min")
+    base.write_table(raw[raw_columns], engine=engine, table="spp_raw_15min",
+                     source_report=f"ercot-mis-{RECENT_REPORT_TYPE_ID}")
 
     hourly = base.to_hourly(raw)
     base.validate(hourly, "recent hourly")
-    base.write_table(hourly, engine=engine, table="market_data_hourly")
+    base.write_table(hourly, engine=engine, table="market_data_hourly",
+                     source_report="derived:spp_raw_15min")
 
     print(f"Ingested {len(raw):,} intervals -> {len(hourly):,} hourly rows")
 

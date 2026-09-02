@@ -196,6 +196,18 @@ python data-ingestion/ingest_recent.py
 python forecasting-model/train_model.py               # → forecast_model.joblib
 ```
 
+The schema is explicit and version-controlled. Apply or verify it with:
+
+```bash
+python data-ingestion/schema.py --check     # report drift, change nothing
+python data-ingestion/schema.py --migrate   # apply, preserving every row
+```
+
+Every table has a primary key on `(settlement_point, timestamp_utc)`, `NOT NULL`
+on the columns that must have values, indexes on the access paths, and lineage
+columns (`ingested_at`, `source_report`, `source_file`) so any row can name
+where it came from.
+
 Keep it current with cron:
 
 ```cron
