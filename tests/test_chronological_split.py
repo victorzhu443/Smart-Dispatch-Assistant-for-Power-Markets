@@ -7,33 +7,13 @@ reports is inflated. These tests fail if that regresses.
 
 Run with:  pytest tests/ -v
 """
-import importlib.util
-from pathlib import Path
+import importlib
 
 import numpy as np
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 
-
-def _load(relative_path, module_name):
-    """Import a module by file path.
-
-    The pipeline directories are named with hyphens (feature-engineering,
-    forecasting-model), which are not valid Python identifiers, so a normal
-    import cannot reach them.
-    """
-    spec = importlib.util.spec_from_file_location(
-        module_name, REPO_ROOT / relative_path
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-phase_3_1 = _load(
-    "forecasting-model/phase_3_1_load_features.py", "phase_3_1_load_features"
-)
+phase_3_1 = importlib.import_module('forecasting_model.phase_3_1_load_features')
 
 
 @pytest.fixture

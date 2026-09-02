@@ -9,33 +9,15 @@ No network: every test builds its own file listing.
 
 Run with:  pytest tests/ -v
 """
-import importlib.util
-import sys
+import importlib
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-INGEST_DIR = REPO_ROOT / "data-ingestion"
 
-# ingest_recent imports its sibling by name, so that directory must be
-# importable the same way it is when run as a script.
-if str(INGEST_DIR) not in sys.path:
-    sys.path.insert(0, str(INGEST_DIR))
-
-
-def _load(path, name):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-base = _load(INGEST_DIR / "ingest_ercot_history.py", "ingest_ercot_history")
-recent = _load(INGEST_DIR / "ingest_recent.py", "ingest_recent")
+base = importlib.import_module('data_ingestion.ingest_ercot_history')
+recent = importlib.import_module('data_ingestion.ingest_recent')
 
 
 def _files(*stamps):

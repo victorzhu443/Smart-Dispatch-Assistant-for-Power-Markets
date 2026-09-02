@@ -7,6 +7,8 @@ import json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+
+from common.db import setup_database_connection
 from sqlalchemy.exc import SQLAlchemyError
 
 load_dotenv()
@@ -28,38 +30,11 @@ class InsufficientDataError(RuntimeError):
     """
 
 
-def setup_database_connection():
-    """Setup database connection"""
-    try:
-        # Try PostgreSQL first
-        pg_user = os.getenv('POSTGRES_USER', 'postgres')
-        pg_password = os.getenv('POSTGRES_PASSWORD', 'password')
-        pg_host = os.getenv('POSTGRES_HOST', 'localhost')
-        pg_port = os.getenv('POSTGRES_PORT', '5432')
-        pg_database = os.getenv('POSTGRES_DATABASE', 'smart_dispatch')
-        
-        pg_connection_string = f"postgresql://{pg_user}:{pg_password}@{pg_host}:{pg_port}/{pg_database}"
-        engine = create_engine(pg_connection_string)
-        
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        
-        print("✅ PostgreSQL connection successful")
-        return engine, "postgresql"
-        
-    except Exception as e:
-        print(f"⚠️ PostgreSQL not available, using SQLite")
-        sqlite_path = "market_data.db"
-        sqlite_connection_string = f"sqlite:///{sqlite_path}"
-        engine = create_engine(sqlite_connection_string)
-        print(f"✅ SQLite connection successful: {sqlite_path}")
-        return engine, "sqlite"
-
 def load_data_from_sql(engine, table_name="market_data_hourly", hub=DEFAULT_HUB):
     """Load the hourly price series for one settlement point.
 
     Reads market_data_hourly, written by
-    data-ingestion/ingest_ercot_history.py. The older market_data table held
+    python -m data_ingestion.ingest_ercot_history. The older market_data table held
     5-minute snapshots across ~1,000 nodes at a single instant, which is a
     cross-section rather than a time series and cannot be modelled.
     """
@@ -75,7 +50,7 @@ def load_data_from_sql(engine, table_name="market_data_hourly", hub=DEFAULT_HUB)
     if df.empty:
         raise InsufficientDataError(
             f"No rows in {table_name} for {hub!r}. Run "
-            f"'python data-ingestion/ingest_ercot_history.py' first, or pass a "
+            f"'python -m data_ingestion.ingest_ercot_history' first, or pass a "
             f"different --hub."
         )
 

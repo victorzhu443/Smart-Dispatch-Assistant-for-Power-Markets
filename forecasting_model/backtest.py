@@ -36,6 +36,8 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, text
 
+from common.db import setup_database_connection
+
 MARKET_TZ = "America/Chicago"
 
 # Hours are labelled by local Central time, since the daily demand cycle that
@@ -54,23 +56,6 @@ DEFAULT_SPIKE_THRESHOLD = 200.0
 
 class BacktestError(RuntimeError):
     """The backtest cannot produce a trustworthy comparison."""
-
-
-def setup_database_connection():
-    try:
-        pg = (
-            f"postgresql://{os.getenv('POSTGRES_USER', 'postgres')}:"
-            f"{os.getenv('POSTGRES_PASSWORD', 'password')}@"
-            f"{os.getenv('POSTGRES_HOST', 'localhost')}:"
-            f"{os.getenv('POSTGRES_PORT', '5432')}/"
-            f"{os.getenv('POSTGRES_DATABASE', 'smart_dispatch')}"
-        )
-        engine = create_engine(pg)
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        return engine
-    except Exception:
-        return create_engine("sqlite:///market_data.db")
 
 
 def load_prices(engine, hub: str) -> pd.DataFrame:
