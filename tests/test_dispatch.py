@@ -7,26 +7,14 @@ and not once overall.
 
 Run with:  pytest tests/ -v
 """
-import importlib.util
-from pathlib import Path
+import importlib
 
 import numpy as np
 import pandas as pd
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 
-
-def _load(relative_path, module_name):
-    spec = importlib.util.spec_from_file_location(
-        module_name, REPO_ROOT / relative_path
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-dispatch = _load("forecasting-model/dispatch.py", "dispatch")
+dispatch = importlib.import_module('forecasting_model.dispatch')
 
 ECON = {"marginal_cost": 45.0, "start_cost": 5000.0, "capacity_mw": 100.0}
 

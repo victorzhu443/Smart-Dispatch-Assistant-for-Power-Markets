@@ -24,7 +24,7 @@ ARTIFACT = REPO_ROOT / "forecast_model.joblib"
 
 requires_artifact = pytest.mark.skipif(
     not ARTIFACT.exists(),
-    reason="no model artifact; run forecasting-model/train_model.py",
+    reason="no model artifact; run python -m forecasting_model.train_model",
 )
 
 
@@ -100,7 +100,7 @@ class TestStaleModelIsFlagged:
             "/forecast?timestamp=2026-08-15T18:00:00Z"
         ).get_json()
 
-        assert "train_model.py" in body["provenance"]["fallback_reason"]
+        assert "forecasting_model.train_model" in body["provenance"]["fallback_reason"]
 
     @requires_artifact
     def test_a_stale_model_still_serves(self):

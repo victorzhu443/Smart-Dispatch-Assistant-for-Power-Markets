@@ -41,7 +41,7 @@ def client(api):
 
 requires_artifact = pytest.mark.skipif(
     not ARTIFACT.exists(),
-    reason="no model artifact; run forecasting-model/train_model.py",
+    reason="no model artifact; run python -m forecasting_model.train_model",
 )
 
 def _has_market_data() -> bool:
@@ -68,7 +68,6 @@ requires_data = pytest.mark.skipif(
     not _has_market_data(),
     reason="no populated database; run 'make backfill'",
 )
-
 
 
 class TestRecommendationRule:

@@ -10,7 +10,7 @@ forecast_model.pkl
 forecast_model.joblib
 
 # Cached ERCOT archives (~14MB/year, re-downloadable from the public MIS)
-data-ingestion/.ercot_cache/
+data_ingestion/.ercot_cache/
 
 # Python
 __pycache__/
