@@ -245,14 +245,40 @@ def write_feature_matrix_to_sql(df_features, engine, table_name="features"):
         # Store original sliding window count
         sliding_window_count = len(df_features)
         
-        # Save DataFrame to SQL table
+        # Write to a staging table first, then swap. `if_exists="replace"`
+        # drops the live table before inserting, so a failure mid-insert leaves
+        # it empty -- which is exactly what happened the first time this ran
+        # against real data instead of 51 rows.
+        staging = f"{table_name}_staging"
+
+        # method="multi" batches rows into one INSERT, and SQLite caps a
+        # statement at 32,766 bound variables. With 23 columns that is ~1,424
+        # rows, so an unbounded batch raises "too many SQL variables". The bug
+        # was invisible while the table held 51 rows.
+        max_variables = 30000
+        chunk = max(1, max_variables // max(1, len(df_features.columns)))
+
         df_features.to_sql(
-            name=table_name,
+            name=staging,
             con=engine,
-            if_exists='replace',  # Replace table if it exists
-            index=False,  # Don't save DataFrame index
-            method='multi'  # Use multi-row insert for better performance
+            if_exists='replace',
+            index=False,
+            method='multi',
+            chunksize=chunk,
         )
+
+        # Swap only once the staging table is known good.
+        with engine.begin() as conn:
+            staged = conn.execute(
+                text(f"SELECT COUNT(*) FROM {staging}")
+            ).scalar()
+            if staged != sliding_window_count:
+                raise SQLAlchemyError(
+                    f"staged {staged} rows but expected {sliding_window_count}; "
+                    f"leaving {table_name} untouched"
+                )
+            conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
+            conn.execute(text(f"ALTER TABLE {staging} RENAME TO {table_name}"))
         
         print(f"✅ Feature matrix saved to table '{table_name}'")
         print(f"   Features saved: {len(df_features)} records")
