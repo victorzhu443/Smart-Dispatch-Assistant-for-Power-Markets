@@ -6,82 +6,78 @@ and a RAG-backed `/query` API behind a Django UI.
 
 This is a learning/portfolio build following the phased plan in [`PRD.md`](PRD.md).
 It is mid-rebuild, and the rebuild is working: the forecaster now trains on
-**24 months of real ERCOT prices** and beats the day-ahead market on a held-out
-window, where the previous version trained on generated data and lost to a
-constant. The RAG fine-tuning result is real and is worse than its base model.
+**24 months of real ERCOT prices** and beats the day-ahead market by 8.6% under
+walk-forward validation, where the previous version trained on generated data
+and lost to a constant. It still cannot predict scarcity hours, which is the
+next problem. The RAG fine-tuning result is real and is worse than its base model.
 See [Results](#results) and
 [Known limitations](#known-limitations); every number below is reproducible with
 the command next to it.
 
 ## Results
 
-### Price forecasting (Phase 3) — beats day-ahead on a calm test window
+### Price forecasting (Phase 3) — beats the market by 8.6%, fails on scarcity
 
-Trained on **17,520 real hourly windows** from HB_HOUSTON (2024–2025), with a
-chronological split: train through 2025-08-08, test on the 3,504 hours after
-it. Reproduce with:
+Evaluated **walk-forward**: retrain each month on everything prior, predict the
+next month, step forward. 19 folds, **13,182 out-of-sample hours** at
+HB_HOUSTON. Every predictor scored on exactly the same hours.
 
 ```bash
 python data-ingestion/ingest_ercot_history.py     # ~1 min, no credentials
-python feature-engineering/phase_2_4_feature_matrix_sql.py
-python forecasting-model/phase_3_4_evaluate_rmse.py
+python forecasting-model/walk_forward.py
 ```
 
-All predictors scored on the **same 3,504 held-out hours**:
+| Predictor | RMSE | MAE | Peak hours | **Scarcity hours** |
+| --- | --- | --- | --- | --- |
+| **Ridge regression** | **$37.45** | $8.29 | $63.59 | $619.06 |
+| Gradient boosting | $39.12 | $7.77 | $66.30 | $635.17 |
+| Day-ahead (the market) | $40.98 | $9.80 | $65.89 | $660.22 |
+| Persistence | $45.96 | $8.04 | $67.53 | $717.00 |
+| Same hour yesterday | $58.16 | $14.49 | $95.94 | $658.49 |
 
-| Predictor | RMSE |
-| --- | --- |
-| **LSTM (this model)** | **$11.70** |
-| Persistence (previous hour) | $12.61 |
-| Day-ahead market price | $15.62 |
-| Same hour yesterday | $21.51 |
-| Training mean (constant) | $21.45 |
+Three things this says, and the third is the important one.
 
-R² is **0.695**, and the model beats the day-ahead price — the market's own
-published forecast of real-time.
+**It beats the market, modestly and consistently.** Ridge is 8.6% better than
+the day-ahead price across 19 independent monthly folds. Day-ahead is the
+market's own published forecast, so a consistent edge over it is a real
+result — but 8.6%, not the 25% a single calm test window suggested.
 
-**Read the caveat before quoting that.** This test window is unusually calm: it
-peaks at $214/MWh and contains only **3 hours above $200**, against 74 across
-the full two years. Day-ahead scores $15.62 here versus $47.44 over the whole
-period, which confirms the window is benign rather than the model being
-extraordinary. The margin over plain persistence is also thin (7%).
+**The simplest model won.** Ridge regression beat gradient boosting. Whatever
+non-linear structure the trees found did not survive contact with out-of-sample
+months, and the extra complexity earned nothing. Worth remembering before
+reaching for a bigger architecture.
 
-So the honest reading is: the model works, it is learning something real, and
-it has not yet been tested on the hours that decide whether a peaker earns its
-year. A walk-forward backtest across all 24 months, scored separately on
-scarcity hours, is the next step — `forecasting-model/backtest.py` already
-scores the baselines that way.
+**Nobody can predict scarcity.** On the 41 hours at or above $200/MWh, every
+predictor is wrong by roughly $600–700. Those are the hours that decide whether
+a peaker earns its year, and they are effectively unforecast — by this model
+and by the market alike. The headline RMSE is dominated by the 99.7% of hours
+where the decision is easy anyway.
+
+So the useful conclusion is not "the model works." It is that the remaining
+value in this problem is entirely in the tail, and a point forecast is the
+wrong tool for it. That is what motivates quantile forecasting and an explicit
+dispatch rule as the next step.
 
 <details>
-<summary><strong>The result this replaced, and why it was withdrawn</strong></summary>
+<summary><strong>The earlier single-split result, and why it overstated things</strong></summary>
 
-Until the M0 fix, `extend_hourly_data()` padded that single real observation up
-to 75 points with a seeded random walk (`last_price + N(0,3) + 5·sin(hour)`), so
-**74 of 75 hourly points — and all 51 training windows — were synthetic.** The
-`features` table's Aug 1–3 timestamps came from `datetime.now()` at generation
-time, which is why they never matched the Jul 31 raw data.
+A single chronological split (train through 2025-08-08, test on the 3,504
+hours after) gave an LSTM $11.70 RMSE against day-ahead's $15.62 — a 25% edge,
+R² 0.695.
 
-The LSTM trained for 5 epochs on those 51 windows scored as follows — a measure
-of how well it fit a random walk, not of anything about ERCOT prices:
+That window turned out to be unusually calm: it peaks at $214/MWh and holds
+only 3 hours above $200, against 74 across the full two years. Day-ahead scores
+$15.62 there versus $40.98 walking forward, which confirms the window was easy
+rather than the model being exceptional.
 
-| Predictor | RMSE | Beats model? |
-| --- | --- | --- |
-| **LSTM** | **$19.97 – $38.21** (varies per run) | — |
-| Mean-of-training baseline | $12.51 | yes |
-| Last-hour baseline | $13.22 | yes |
+The single-split number was not wrong, but it was not representative, and it is
+the reason walk-forward exists. Reproduce it with
+`python forecasting-model/phase_3_4_evaluate_rmse.py`.
 
-Across four runs the model scored $19.97, $38.21, $29.59 and $26.67, with R²
-between −1.60 and −8.53. A negative R² means it did worse than always predicting
-the training mean. The baselines were identical every run because the split was
-seeded; the model's spread came from training being unseeded, so no single run
-was a meaningful number to quote.
-
-Predictions collapsed into a narrow $18–$23 band while actuals ranged $18–$56, a
-−$16 mean bias. With 40 training samples and 57,441 parameters there was nothing
-to learn — and the increments it was asked to learn were drawn from `N(0, 3)`,
-unlearnable by construction. The split was also shuffled, so the model was
-scored on hours that preceded ones it trained on; that leakage *inflates*
-scores, and it still lost to a constant.
+Note also that `phase_3_4`'s "last-hour baseline" is not persistence — it is
+`np.mean(y_train[-3:])` held constant across the whole test set, which is why
+it scores almost identically to the training mean. The real baselines are in
+`backtest.py` and `walk_forward.py`.
 
 </details>
 
@@ -197,12 +193,13 @@ Ordered by how much they'd need fixing before this is more than a demo.
    hourly hub prices plus day-ahead prices from ERCOT's public MIS, which
    needs no credentials. Scheduled ingestion (PRD step 1.6) is still
    unimplemented, so the window does not advance on its own.
-4. **The forecaster has not been tested on scarcity hours.** It beats
-   day-ahead on its test window, but that window holds 3 hours above
-   $200/MWh against 74 across the full two years. Scarcity hours are where a
-   peaker earns its margin, so the headline number is not yet the number that
-   matters. A walk-forward backtest over all 24 months, scored separately on
-   spikes, is the next step.
+4. **Scarcity hours are unforecast.** Walk-forward across 19 folds, every
+   predictor — including the market's own day-ahead price — is wrong by
+   roughly $600–700 on hours above $200/MWh. Those are the hours that decide
+   whether a peaker earns its year, so the 8.6% headline edge is earned almost
+   entirely on hours where the dispatch decision is easy anyway. A point
+   forecast is the wrong tool here; quantile forecasting plus an explicit
+   dispatch rule is the next step.
 5. **The RAG fine-tuning made the model worse** and is still in the tree.
    ~100 Q&A pairs is far too few to fine-tune on without catastrophic
    degradation; the retrieval half works and the fine-tuning half should
