@@ -14,15 +14,40 @@ def chat(request):
 
 @require_GET
 def api_forecast(request):
-    ts = request.GET.get("timestamp")
+    """Proxy a single-hour forecast."""
+    params = {
+        key: request.GET[key]
+        for key in ("timestamp", "marginal_cost")
+        if request.GET.get(key)
+    }
     try:
-        params = {}
-        if ts:
-            params["timestamp"] = ts
         r = requests.get(settings.FORECAST_API_URL, params=params, timeout=20)
         return JsonResponse(r.json(), status=r.status_code, safe=False)
-    except Exception as e:
-        return JsonResponse({"status": "error", "message": str(e)}, status=500)
+    except requests.RequestException as e:
+        return JsonResponse({
+            "error": "forecast service unreachable",
+            "detail": str(e),
+            "remedy": "start it with: python backend/phase_5_1_forecast_api.py",
+        }, status=503)
+
+
+@require_GET
+def api_forecast_range(request):
+    """Proxy a multi-hour forecast band, which is what the chart draws."""
+    params = {
+        key: request.GET[key]
+        for key in ("start", "hours", "marginal_cost")
+        if request.GET.get(key)
+    }
+    try:
+        r = requests.get(settings.FORECAST_RANGE_URL, params=params, timeout=30)
+        return JsonResponse(r.json(), status=r.status_code, safe=False)
+    except requests.RequestException as e:
+        return JsonResponse({
+            "error": "forecast service unreachable",
+            "detail": str(e),
+            "remedy": "start it with: python backend/phase_5_1_forecast_api.py",
+        }, status=503)
 
 @csrf_exempt
 @require_POST

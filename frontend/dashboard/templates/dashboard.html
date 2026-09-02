@@ -1,111 +1,262 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card">
-  <h2>Forecast</h2>
 
-  <div class="row">
-    <label>Timestamp (optional):</label>
-    <input id="ts" type="datetime-local"/>
-    <button id="btnForecast">Get forecast</button>
-    <button id="btnNow">Now</button>
-    <label class="pill">
-      <input id="auto" type="checkbox" style="vertical-align:middle; margin-right:6px;"/>
-      Auto-refresh (30s)
-    </label>
-    <button id="btnClear">Clear</button>
-    <span id="latency" class="pill" style="display:none;"></span>
+<style>
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 16px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
+  .field input { padding: 7px 9px; border: 1px solid #c9d1da; border-radius: 4px; font: inherit; }
+
+  .banner { padding: 10px 14px; border-radius: 4px; margin-bottom: 14px; font-size: 14px; }
+  .banner.warn { background: #fdf3e0; border-left: 3px solid #b7791f; }
+  .banner.error { background: #fceceb; border-left: 3px solid #b3261e; }
+  .banner[hidden] { display: none !important; }
+
+  .summary { display: flex; flex-wrap: wrap; gap: 1px; background: #dfe4ea; border: 1px solid #dfe4ea; margin: 16px 0; }
+  .summary div { flex: 1 1 130px; background: #fff; padding: 12px 14px; }
+  .summary .n { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .summary .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; opacity: .65; margin-top: 4px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; margin: 10px 0 0; opacity: .8; }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  .swatch { width: 14px; height: 10px; border-radius: 2px; display: inline-block; }
+
+  .tablewrap { overflow-x: auto; margin-top: 20px; }
+  table.hours { border-collapse: collapse; width: 100%; min-width: 520px; font-size: 14px; }
+  table.hours th, table.hours td { padding: 7px 10px; border-bottom: 1px solid #e6eaee; text-align: right; }
+  table.hours th:first-child, table.hours td:first-child { text-align: left; }
+  table.hours th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .6; }
+  table.hours td { font-variant-numeric: tabular-nums; }
+  .call { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 3px; letter-spacing: .04em; }
+  .call.run { background: #e3f1ec; color: #12654f; }
+  .call.hold { background: #eef1f4; color: #56606e; }
+  .call.no_action { background: #fdf3e0; color: #8a6206; }
+
+  .provenance { font-size: 12.5px; opacity: .7; margin-top: 14px; line-height: 1.7; }
+  .provenance code { background: #eef1f4; padding: 1px 5px; border-radius: 3px; }
+</style>
+
+<section class="card">
+  <h2>Dispatch outlook</h2>
+  <p style="margin-top:-6px; opacity:.75; font-size:14.5px;">
+    Forecast price band with the unit's marginal cost across it. Commit the hours
+    where the band clears the line.
+  </p>
+
+  <div class="controls">
+    <div class="field">
+      <label for="start">Start hour (UTC)</label>
+      <input id="start" type="datetime-local"/>
+    </div>
+    <div class="field">
+      <label for="hours">Hours</label>
+      <input id="hours" type="number" value="24" min="1" max="168" style="width:80px"/>
+    </div>
+    <div class="field">
+      <label for="mc">Marginal cost $/MWh</label>
+      <input id="mc" type="number" value="45" min="0" step="1" style="width:120px"/>
+    </div>
+    <button id="load">Load outlook</button>
+    <button id="latest">Latest available</button>
   </div>
 
-  <div id="result" class="pill">—</div>
-  <canvas id="chart" height="110" style="margin-top:12px;"></canvas>
+  <div id="banner" class="banner warn" hidden></div>
+
+  <div class="summary" id="summary" hidden>
+    <div><div class="n" id="s-run">—</div><div class="k">Hours to run</div></div>
+    <div><div class="n" id="s-margin">—</div><div class="k">Margin per MW</div></div>
+    <div><div class="n" id="s-peak">—</div><div class="k">Highest P90</div></div>
+    <div><div class="n" id="s-width">—</div><div class="k">Median band width</div></div>
+  </div>
+
+  <canvas id="chart" height="120"></canvas>
+
+  <div class="legend">
+    <span><i class="swatch" style="background:rgba(51,105,180,.22)"></i> P10–P90 range</span>
+    <span><i class="swatch" style="background:#3369b4"></i> P50 (median)</span>
+    <span><i class="swatch" style="background:#b3261e"></i> Marginal cost</span>
+    <span><i class="swatch" style="background:#12654f"></i> Hour to run</span>
+  </div>
+
+  <div class="tablewrap">
+    <table class="hours" id="hours-table" hidden>
+      <thead>
+        <tr><th>Hour (UTC)</th><th>P10</th><th>P50</th><th>P90</th><th>Margin</th><th>Call</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="provenance" id="provenance"></div>
 </section>
 
 <script>
-const $ = (q)=>document.querySelector(q);
+const $ = (q) => document.querySelector(q);
+let chart;
 
-let chart, data = { labels: [], prices: [] }, timer=null;
+function money(v) { return "$" + Number(v).toFixed(2); }
 
-function initChart(){
-  const ctx = document.getElementById("chart").getContext("2d");
-  chart = new Chart(ctx, {
+function showBanner(kind, html) {
+  const b = $("#banner");
+  b.className = "banner " + kind;
+  b.innerHTML = html;
+  b.hidden = false;
+}
+
+function drawChart(series, marginalCost) {
+  const labels = series.map(h => h.timestamp.slice(5, 16).replace("T", " "));
+  const p10 = series.map(h => h.forecast.p10);
+  const p50 = series.map(h => h.forecast.p50);
+  const p90 = series.map(h => h.forecast.p90);
+
+  // Colour the median point by the decision, so the call is readable off the chart.
+  const pointColours = series.map(h =>
+    h.recommendation.action === "run" ? "#12654f"
+    : h.recommendation.action === "no_action" ? "#b7791f" : "#8b97a6");
+
+  const data = {
+    labels,
+    datasets: [
+      { label: "P90", data: p90, borderColor: "rgba(51,105,180,.35)",
+        backgroundColor: "rgba(51,105,180,.18)", borderWidth: 1,
+        pointRadius: 0, fill: "+1", tension: .25 },
+      { label: "P10", data: p10, borderColor: "rgba(51,105,180,.35)",
+        borderWidth: 1, pointRadius: 0, fill: false, tension: .25 },
+      { label: "P50 (median)", data: p50, borderColor: "#3369b4",
+        backgroundColor: "#3369b4", borderWidth: 2, tension: .25,
+        pointRadius: 3, pointBackgroundColor: pointColours,
+        pointBorderColor: pointColours, fill: false },
+      { label: "Marginal cost", data: labels.map(() => marginalCost),
+        borderColor: "#b3261e", borderWidth: 1.5, borderDash: [6, 4],
+        pointRadius: 0, fill: false }
+    ]
+  };
+
+  if (chart) chart.destroy();
+  chart = new Chart($("#chart").getContext("2d"), {
     type: "line",
-    data: {
-      labels: data.labels,
-      datasets: [{ label: "Predicted Price (USD/MWh)", data: data.prices }]
-    },
+    data,
     options: {
       responsive: true,
-      interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: true } },
-      scales: { y: { beginAtZero: true } }
+      interaction: { mode: "index", intersect: false },
+      scales: {
+        y: { title: { display: true, text: "$/MWh" } },
+        x: { ticks: { maxRotation: 0, autoSkipPadding: 18 } }
+      },
+      plugins: {
+        legend: { labels: { filter: i => i.text !== "P10" } },
+        tooltip: {
+          callbacks: {
+            afterBody: (items) => {
+              const h = series[items[0].dataIndex];
+              const r = h.recommendation;
+              return r.action === "no_action"
+                ? `Call: no action (${r.reason})`
+                : `Call: ${r.action}  (${money(r.expected_margin_per_mwh)}/MWh)`;
+            }
+          }
+        }
+      }
     }
   });
 }
 
-function addPoint(label, price){
-  data.labels.push(label);
-  data.prices.push(price);
-  chart.update();
+function fillTable(series) {
+  const body = $("#hours-table tbody");
+  body.innerHTML = "";
+  for (const h of series) {
+    const r = h.recommendation;
+    const margin = r.expected_margin_per_mwh;
+    const row = document.createElement("tr");
+    row.innerHTML =
+      `<td>${h.timestamp.slice(0, 16).replace("T", " ")}</td>` +
+      `<td>${money(h.forecast.p10)}</td>` +
+      `<td>${money(h.forecast.p50)}</td>` +
+      `<td>${money(h.forecast.p90)}</td>` +
+      `<td>${margin === undefined ? "—" : money(margin)}</td>` +
+      `<td><span class="call ${r.action}">${r.action.replace("_", " ")}</span></td>`;
+    body.appendChild(row);
+  }
+  $("#hours-table").hidden = series.length === 0;
 }
 
-function isoNowLocal(){
-  const d = new Date();
-  const pad = (n)=> String(n).padStart(2,"0");
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+function fillSummary(series) {
+  const runs = series.filter(h => h.recommendation.action === "run");
+  const margin = runs.reduce((a, h) => a + h.recommendation.expected_margin_per_mwh, 0);
+  const widths = series.map(h => h.forecast.p90 - h.forecast.p10).sort((a, b) => a - b);
+  const median = widths.length ? widths[Math.floor(widths.length / 2)] : 0;
+  const peak = series.length ? Math.max(...series.map(h => h.forecast.p90)) : 0;
+
+  $("#s-run").textContent = `${runs.length}/${series.length}`;
+  // Hourly $/MWh margins summed over the window give $ per MW committed.
+  $("#s-margin").textContent = money(margin);
+  $("#s-peak").textContent = money(peak);
+  $("#s-width").textContent = money(median);
+  $("#summary").hidden = false;
 }
 
-async function fetchForecast(tsIso){
-  const url = tsIso ? `/api/forecast?timestamp=${encodeURIComponent(tsIso)}` : "/api/forecast";
-  const t0 = performance.now();
-  const res = await fetch(url);
-  const t1 = performance.now();
-  const body = await res.json();
-  const ms = Math.round(t1 - t0);
-  return { body, ms };
+function fillProvenance(body) {
+  const p = body.provenance || {};
+  const parts = [
+    `hub <code>${body.hub}</code>`,
+    `model <code>${p.model || "unknown"}</code>`,
+    p.model_version ? `version <code>${p.model_version}</code>` : null,
+    p.training_cutoff ? `trained through <code>${p.training_cutoff.slice(0, 16)}</code>` : null,
+    p.data_age_hours != null ? `data age <code>${Number(p.data_age_hours).toFixed(1)}h</code>` : null
+  ].filter(Boolean);
+  $("#provenance").innerHTML = parts.join(" &middot; ");
 }
 
-async function pull(tsIso){
-  try{
-    const { body, ms } = await fetchForecast(tsIso);
-    const price = Number(body.predicted_price);
-    const unit = body.currency || "USD/MWh";
-    $("#result").textContent = isFinite(price) ? `$${price.toFixed(2)} ${unit}` : "—";
-    const label = (body.timestamp || new Date().toISOString()).replace("T"," ").slice(0,16);
-    addPoint(label, price);
-    const lat = $("#latency");
-    lat.textContent = `Latency: ${ms} ms`;
-    lat.style.display = "inline-block";
-  }catch(e){
-    console.error(e);
-    $("#result").textContent = "Error fetching forecast";
+async function load() {
+  const startInput = $("#start").value;
+  const params = new URLSearchParams({
+    hours: $("#hours").value || "24",
+    marginal_cost: $("#mc").value || "45"
+  });
+  if (startInput) params.set("start", new Date(startInput).toISOString());
+
+  $("#banner").hidden = true;
+  $("#load").disabled = true;
+
+  try {
+    const res = await fetch(`/api/forecast/range?${params}`);
+    const body = await res.json();
+
+    if (!res.ok) {
+      showBanner("error",
+        `<strong>${body.error || "Request failed"}</strong>` +
+        (body.detail ? `<br>${body.detail}` : "") +
+        (body.remedy ? `<br><em>${body.remedy}</em>` : ""));
+      return;
+    }
+
+    // The service reports degradation explicitly; surface it rather than
+    // presenting a fallback as though it were the real model.
+    if (body.provenance && body.provenance.degraded) {
+      showBanner("warn",
+        `<strong>Degraded forecast.</strong> Serving ` +
+        `<code>${body.provenance.model}</code>` +
+        (body.provenance.fallback_reason
+          ? ` — ${body.provenance.fallback_reason}` : "") +
+        `. Treat these numbers as a fallback, not a model output.`);
+    }
+
+    const marginalCost = Number(body.marginal_cost);
+    drawChart(body.series, marginalCost);
+    fillTable(body.series);
+    fillSummary(body.series);
+    fillProvenance(body);
+  } catch (err) {
+    showBanner("error",
+      `<strong>Could not reach the dashboard API.</strong><br>${err}`);
+  } finally {
+    $("#load").disabled = false;
   }
 }
 
-$("#btnForecast").addEventListener("click", ()=>{
-  const raw = $("#ts").value;
-  pull(raw ? new Date(raw).toISOString() : undefined);
-});
-
-$("#btnNow").addEventListener("click", ()=>{
-  $("#ts").value = isoNowLocal();
-});
-
-$("#btnClear").addEventListener("click", ()=>{
-  data.labels = []; data.prices = []; chart.update(); $("#result").textContent = "—";
-});
-
-$("#auto").addEventListener("change", (e)=>{
-  if (e.target.checked){
-    timer = setInterval(()=> pull(undefined), 30000);
-    pull(undefined);
-  } else {
-    clearInterval(timer);
-  }
-});
-
-window.addEventListener("load", ()=>{
-  initChart();
-  pull(undefined); // prime
-});
+$("#load").addEventListener("click", load);
+$("#latest").addEventListener("click", () => { $("#start").value = ""; load(); });
+window.addEventListener("load", load);
 </script>
+
 {% endblock %}
