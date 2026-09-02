@@ -5,68 +5,79 @@ time-series features, trains a price forecaster, and exposes both a `/forecast`
 and a RAG-backed `/query` API behind a Django UI.
 
 This is a learning/portfolio build following the phased plan in [`PRD.md`](PRD.md).
-It is mid-rebuild. **The forecasting pipeline deliberately refuses to run on the
-current database** — there is only five minutes of real market data, and it now
-fails loudly rather than padding the gap with generated prices, which is what it
-used to do. The RAG fine-tuning result is real and is worse than its base model.
-The Django UI does not start. See [Results](#results) and
+It is mid-rebuild, and the rebuild is working: the forecaster now trains on
+**24 months of real ERCOT prices** and beats the day-ahead market by 8.6% under
+walk-forward validation, where the previous version trained on generated data
+and lost to a constant. It still cannot predict scarcity hours, which is the
+next problem. The RAG fine-tuning result is real and is worse than its base model.
+See [Results](#results) and
 [Known limitations](#known-limitations); every number below is reproducible with
 the command next to it.
 
 ## Results
 
-### Price forecasting (Phase 3) — no current result
+### Price forecasting (Phase 3) — beats the market by 8.6%, fails on scarcity
 
-**The pipeline does not currently produce a forecasting number, by design.**
-There is not enough real data to train on, and it now says so instead of
-inventing the difference.
+Evaluated **walk-forward**: retrain each month on everything prior, predict the
+next month, step forward. 19 folds, **13,182 out-of-sample hours** at
+HB_HOUSTON. Every predictor scored on exactly the same hours.
 
-The database holds 2,100 rows, but they span **two timestamps five minutes
-apart** across 1,034 settlement points. Feature engineering filters to a single
-hub, which leaves *one* real hourly price point — far below the 75 needed to
-build 24-hour windows. Running either stage fails loudly:
-
-```console
-$ python feature-engineering/phase_2_4_feature_matrix_sql.py
-InsufficientDataError: Need 75 hourly observations to build 24-hour windows,
-have 1 for settlement point '7RNCHSLR_ALL'.
-
-$ python forecasting-model/phase_3_4_evaluate_rmse.py
-InsufficientDataError: Refusing to train on 51 feature windows; 1000 required.
+```bash
+python data-ingestion/ingest_ercot_history.py     # ~1 min, no credentials
+python forecasting-model/walk_forward.py
 ```
 
-Restoring a real number requires ingesting real history, not changing the model.
+| Predictor | RMSE | MAE | Peak hours | **Scarcity hours** |
+| --- | --- | --- | --- | --- |
+| **Ridge regression** | **$37.45** | $8.29 | $63.59 | $619.06 |
+| Gradient boosting | $39.12 | $7.77 | $66.30 | $635.17 |
+| Day-ahead (the market) | $40.98 | $9.80 | $65.89 | $660.22 |
+| Persistence | $45.96 | $8.04 | $67.53 | $717.00 |
+| Same hour yesterday | $58.16 | $14.49 | $95.94 | $658.49 |
+
+Three things this says, and the third is the important one.
+
+**It beats the market, modestly and consistently.** Ridge is 8.6% better than
+the day-ahead price across 19 independent monthly folds. Day-ahead is the
+market's own published forecast, so a consistent edge over it is a real
+result — but 8.6%, not the 25% a single calm test window suggested.
+
+**The simplest model won.** Ridge regression beat gradient boosting. Whatever
+non-linear structure the trees found did not survive contact with out-of-sample
+months, and the extra complexity earned nothing. Worth remembering before
+reaching for a bigger architecture.
+
+**Nobody can predict scarcity.** On the 41 hours at or above $200/MWh, every
+predictor is wrong by roughly $600–700. Those are the hours that decide whether
+a peaker earns its year, and they are effectively unforecast — by this model
+and by the market alike. The headline RMSE is dominated by the 99.7% of hours
+where the decision is easy anyway.
+
+So the useful conclusion is not "the model works." It is that the remaining
+value in this problem is entirely in the tail, and a point forecast is the
+wrong tool for it. That is what motivates quantile forecasting and an explicit
+dispatch rule as the next step.
 
 <details>
-<summary><strong>The result this replaced, and why it was withdrawn</strong></summary>
+<summary><strong>The earlier single-split result, and why it overstated things</strong></summary>
 
-Until the M0 fix, `extend_hourly_data()` padded that single real observation up
-to 75 points with a seeded random walk (`last_price + N(0,3) + 5·sin(hour)`), so
-**74 of 75 hourly points — and all 51 training windows — were synthetic.** The
-`features` table's Aug 1–3 timestamps came from `datetime.now()` at generation
-time, which is why they never matched the Jul 31 raw data.
+A single chronological split (train through 2025-08-08, test on the 3,504
+hours after) gave an LSTM $11.70 RMSE against day-ahead's $15.62 — a 25% edge,
+R² 0.695.
 
-The LSTM trained for 5 epochs on those 51 windows scored as follows — a measure
-of how well it fit a random walk, not of anything about ERCOT prices:
+That window turned out to be unusually calm: it peaks at $214/MWh and holds
+only 3 hours above $200, against 74 across the full two years. Day-ahead scores
+$15.62 there versus $40.98 walking forward, which confirms the window was easy
+rather than the model being exceptional.
 
-| Predictor | RMSE | Beats model? |
-| --- | --- | --- |
-| **LSTM** | **$19.97 – $38.21** (varies per run) | — |
-| Mean-of-training baseline | $12.51 | yes |
-| Last-hour baseline | $13.22 | yes |
+The single-split number was not wrong, but it was not representative, and it is
+the reason walk-forward exists. Reproduce it with
+`python forecasting-model/phase_3_4_evaluate_rmse.py`.
 
-Across four runs the model scored $19.97, $38.21, $29.59 and $26.67, with R²
-between −1.60 and −8.53. A negative R² means it did worse than always predicting
-the training mean. The baselines were identical every run because the split was
-seeded; the model's spread came from training being unseeded, so no single run
-was a meaningful number to quote.
-
-Predictions collapsed into a narrow $18–$23 band while actuals ranged $18–$56, a
-−$16 mean bias. With 40 training samples and 57,441 parameters there was nothing
-to learn — and the increments it was asked to learn were drawn from `N(0, 3)`,
-unlearnable by construction. The split was also shuffled, so the model was
-scored on hours that preceded ones it trained on; that leakage *inflates*
-scores, and it still lost to a constant.
+Note also that `phase_3_4`'s "last-hour baseline" is not persistence — it is
+`np.mean(y_train[-3:])` held constant across the whole test set, which is why
+it scores almost identically to the training mean. The real baselines are in
+`backtest.py` and `walk_forward.py`.
 
 </details>
 
@@ -177,41 +188,49 @@ Ordered by how much they'd need fixing before this is more than a demo.
    was randomly shuffled and the model was scored on hours preceding ones it
    trained on. Now a chronological split, asserted in
    `tests/test_chronological_split.py`.
-3. **Only five minutes of real market data was ever ingested.** The
-   `market_data` table covers two timestamps (`2025-07-31 00:25:10` and
-   `00:30:10`). The Phase 1 scripts pull with `size=100`–`1000` in a single
-   request and were run once; there is no scheduled ingestion (PRD step 1.6 is
-   unimplemented), so history never accumulated.
-4. **Neither ML result beat its baseline.** Both are documented above. For the
-   forecaster the cause was issues 1 and 2; for the LLM it is ~100 Q&A pairs,
-   which is far too few to fine-tune on without catastrophic degradation.
-5. **The Django UI does not start.** `manage.py` and `settings.py` reference a
+3. ~~**Only five minutes of real market data was ever ingested.**~~
+   **Fixed.** `data-ingestion/ingest_ercot_history.py` pulls 24 months of
+   hourly hub prices plus day-ahead prices from ERCOT's public MIS, which
+   needs no credentials. Scheduled ingestion (PRD step 1.6) is still
+   unimplemented, so the window does not advance on its own.
+4. **Scarcity hours are unforecast.** Walk-forward across 19 folds, every
+   predictor — including the market's own day-ahead price — is wrong by
+   roughly $600–700 on hours above $200/MWh. Those are the hours that decide
+   whether a peaker earns its year, so the 8.6% headline edge is earned almost
+   entirely on hours where the dispatch decision is easy anyway. A point
+   forecast is the wrong tool here; quantile forecasting plus an explicit
+   dispatch rule is the next step.
+5. **The RAG fine-tuning made the model worse** and is still in the tree.
+   ~100 Q&A pairs is far too few to fine-tune on without catastrophic
+   degradation; the retrieval half works and the fine-tuning half should
+   probably be dropped.
+6. **The Django UI does not start.** `manage.py` and `settings.py` reference a
    `smartui` module while the package directory is `smart_ui`, giving
    `ModuleNotFoundError: No module named 'smartui'`. Correcting that surfaces a
    second problem: `frontend/dashboard/` has no `__init__.py`, so Django raises
    `ImproperlyConfigured`. `smart_ui/urls.py` also imports `views` from its own
    package, but the views live in `dashboard/views.py`. PRD test case 6.1
    ("localhost:8000 loads basic UI") therefore does not pass.
-6. **The forecast API does not use the trained LSTM.** `phase_5_1_forecast_api.py`
+7. **The forecast API does not use the trained LSTM.** `phase_5_1_forecast_api.py`
    trains its own `RandomForestRegressor` at startup and falls back to a
    mean-price constant if that fails. `model.pt` is only loaded by
    `model_usage_example.py`. The served forecast and the evaluated model are two
    different things.
-7. **The forecast API's features are mostly hardcoded.** `predict_price()` passes
+8. **The forecast API's features are mostly hardcoded.** `predict_price()` passes
    fixed values for `price_mean`, `price_std`, `trend_slope` and momentum, varying
    only the time-derived features, then applies hand-tuned peak/off-peak
    multipliers. It is closer to a time-of-day heuristic than a learned model.
-8. **`docker-compose.yml` cannot build.** It specifies `dockerfile: Dockerfile`,
+9. **`docker-compose.yml` cannot build.** It specifies `dockerfile: Dockerfile`,
    but the file in the repo is named `Dockerfile.txt`.
-9. **Heavy duplication across phase scripts.** `setup_database_connection()` and
+10. **Heavy duplication across phase scripts.** `setup_database_connection()` and
    the whole `ERCOTClient` class are copy-pasted verbatim into roughly ten files;
    a change to the auth flow means ten edits.
-10. **Test coverage is one module deep.** `tests/test_chronological_split.py`
+11. **Test coverage is one module deep.** `tests/test_chronological_split.py`
    covers the train/test split; everything else still "self-tests" by printing
    its own PASS/FAIL to stdout, which passes just as happily on fabricated data.
    Data-validation and pipeline tests are the gap. Run what exists with
    `pytest tests/ -v`.
-11. **Pinecone is not used.** Phase 4.1 writes embeddings to a local
+12. **Pinecone is not used.** Phase 4.1 writes embeddings to a local
    `market_embeddings.json` and retrieval does an in-memory cosine similarity,
    despite the PRD specifying a vector store.
 
