@@ -1,5 +1,5 @@
 import os
 from django.core.wsgi import get_wsgi_application
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "smartui.settings")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "smart_ui.settings")
 application = get_wsgi_application()

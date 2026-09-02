@@ -5,7 +5,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = "dev-only-smart-dispatch"
 DEBUG = True
-ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+# "testserver" is the host Django's own test client sends; without it
+# every request in a test returns 400 before reaching a view.
+ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver"]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -27,7 +29,7 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-ROOT_URLCONF = "smartui.urls"
+ROOT_URLCONF = "smart_ui.urls"
 
 TEMPLATES = [
     {
@@ -45,7 +47,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = "smartui.wsgi.application"
+WSGI_APPLICATION = "smart_ui.wsgi.application"
 
 DATABASES = {
     "default": {
@@ -61,7 +63,7 @@ USE_TZ = True
 
 # --- Static files ---
 STATIC_URL = "/static/"                           # fixed leading slash
-STATICFILES_DIRS = [BASE_DIR / "dashboard" / "static"]
+STATICFILES_DIRS = [BASE_DIR / "static"]
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

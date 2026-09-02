@@ -45,7 +45,7 @@ print_success "Docker is running"
 
 # Check required files
 print_status "Checking required files..."
-required_files=("phase_5_1_forecast_api.py" "Dockerfile" "requirements.txt" "market_data.db")
+required_files=("backend/phase_5_1_forecast_api.py" "Dockerfile" "requirements.txt" "market_data.db")
 
 for file in "${required_files[@]}"; do
     if [[ ! -f "$file" ]]; then
@@ -75,6 +75,7 @@ print_status "Starting container..."
 docker run -d \
     --name smart-dispatch-forecast \
     -p 5001:5001 \
+    -v "$(pwd)/market_data.db:/app/market_data.db:ro" \
     --health-cmd="curl -f http://localhost:5001/health || exit 1" \
     --health-interval=30s \
     --health-timeout=10s \
