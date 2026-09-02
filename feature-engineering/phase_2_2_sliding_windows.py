@@ -10,6 +10,16 @@ from sqlalchemy.exc import SQLAlchemyError
 
 load_dotenv()
 
+
+class InsufficientDataError(RuntimeError):
+    """Not enough real market data to continue.
+
+    This used to be handled by generating prices to fill the gap, which meant
+    every downstream figure described a random walk instead of the market.
+    Failing here is the point: ingest more history, never fabricate it.
+    """
+
+
 def setup_database_connection():
     """Setup database connection"""
     try:
@@ -97,10 +107,13 @@ def generate_sliding_windows(df_hourly, window_size=24):
     min_required = window_size + 1
     
     if len(df_hourly) < min_required:
-        print(f"⚠️ Insufficient data: need {min_required}, have {len(df_hourly)}")
-        print(f"💡 Extending dataset with simulated data...")
-        df_hourly = extend_hourly_data(df_hourly, min_required + 50)
-    
+        raise InsufficientDataError(
+            f"Need {min_required} hourly observations to build a "
+            f"{window_size}-hour window plus a target, have {len(df_hourly)}. "
+            f"Ingest more history -- see the README section 'Generating the "
+            f"data and models'. Do not pad the series."
+        )
+
     print(f"📊 Creating sliding windows from {len(df_hourly)} hourly data points...")
     
     for i in range(len(df_hourly) - window_size):
@@ -164,82 +177,6 @@ def generate_sliding_windows(df_hourly, window_size=24):
         return None
     
     return sliding_windows
-
-def extend_hourly_data(df_hourly, target_length):
-    """Extend hourly data to meet minimum requirements"""
-    print(f"🔄 Extending hourly data to {target_length} points...")
-    
-    if len(df_hourly) == 0:
-        # Create completely synthetic data
-        start_time = datetime.now() - timedelta(hours=target_length)
-        timestamps = pd.date_range(start=start_time, periods=target_length, freq='1H')
-        
-        # Generate realistic price patterns
-        np.random.seed(42)
-        base_price = 40.0
-        prices = []
-        
-        for i, ts in enumerate(timestamps):
-            # Add daily and weekly patterns
-            hour_of_day = ts.hour
-            day_of_week = ts.weekday()
-            
-            # Peak hours pricing
-            peak_multiplier = 1.4 if 14 <= hour_of_day <= 18 else 1.0
-            weekend_multiplier = 0.9 if day_of_week >= 5 else 1.0
-            
-            # Add some randomness and trends
-            random_variation = np.random.normal(0, 5)
-            seasonal_trend = 10 * np.sin(i * 0.1)
-            
-            price = base_price * peak_multiplier * weekend_multiplier + random_variation + seasonal_trend
-            price = max(15.0, min(150.0, price))  # Reasonable bounds
-            prices.append(round(price, 2))
-        
-        df_extended = pd.DataFrame({
-            'timestamp': timestamps,
-            'price': prices
-        })
-    
-    else:
-        # Extend existing data
-        last_time = df_hourly['timestamp'].max()
-        last_price = df_hourly['price'].iloc[-1]
-        
-        additional_needed = target_length - len(df_hourly)
-        
-        # Generate additional timestamps
-        additional_times = pd.date_range(
-            start=last_time + timedelta(hours=1),
-            periods=additional_needed,
-            freq='1H'
-        )
-        
-        # Generate additional prices with some trend continuation
-        np.random.seed(42)
-        additional_prices = []
-        
-        for i, ts in enumerate(additional_times):
-            # Maintain some price momentum from last known price
-            price_drift = np.random.normal(0, 3)  # Small random walk
-            hour_effect = 5 * np.sin(ts.hour * np.pi / 12)  # Daily pattern
-            
-            price = last_price + price_drift + hour_effect
-            price = max(15.0, min(150.0, price))
-            additional_prices.append(round(price, 2))
-            last_price = price  # Update for next iteration
-        
-        # Create additional data
-        df_additional = pd.DataFrame({
-            'timestamp': additional_times,
-            'price': additional_prices
-        })
-        
-        # Combine with existing data
-        df_extended = pd.concat([df_hourly, df_additional], ignore_index=True)
-    
-    print(f"✅ Extended dataset to {len(df_extended)} hourly points")
-    return df_extended
 
 def main():
     """Execute Phase 2.2 workflow"""

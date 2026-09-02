@@ -6,16 +6,35 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import json
+import random
 import os
 import matplotlib.pyplot as plt
 from datetime import datetime
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 load_dotenv()
+
+# Deterministic runs. Without seeding, model RMSE moved between $19.97 and
+# $38.21 across runs on identical data, which made any before/after comparison
+# meaningless.
+SEED = 42
+TEST_FRACTION = 0.2
+MIN_TRAINING_SAMPLES = 1000
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+
+
+class InsufficientDataError(RuntimeError):
+    """Not enough real market data to train on.
+
+    The PRD's own Phase 2.1 test case sets the bar at >1000 rows; below that a
+    24-hour-window model has nothing to learn from. Training anyway produces a
+    number that looks like a result and is not one.
+    """
 
 def setup_database_connection():
     """Setup database connection"""
@@ -51,6 +70,14 @@ def load_and_prepare_data(engine):
     query = "SELECT * FROM features ORDER BY window_id"
     df_features = pd.read_sql(query, engine)
     df_features['target_time'] = pd.to_datetime(df_features['target_time'])
+
+    if len(df_features) < MIN_TRAINING_SAMPLES:
+        raise InsufficientDataError(
+            f"Refusing to train on {len(df_features)} feature windows; "
+            f"{MIN_TRAINING_SAMPLES} required. Ingest more history and rebuild "
+            f"the features table -- see the README section 'Generating the data "
+            f"and models'."
+        )
     
     # Define feature columns
     exclude_cols = ['window_id', 'target_time', 'target_price', 'price_sequence_json']
@@ -67,10 +94,30 @@ def load_and_prepare_data(engine):
         price_sequences.append(seq)
     price_sequences = np.array(price_sequences)
     
-    # Train/test split
-    X_train, X_test, y_train, y_test, seq_train, seq_test = train_test_split(
-        X, y, price_sequences, test_size=0.2, random_state=42
+    # Chronological split. The test set is the most recent stretch of history.
+    # A random split lets the model train on later hours and be scored on
+    # earlier ones -- it sees the future, which never happens in operation and
+    # silently inflates every score.
+    order = np.argsort(df_features['target_time'].values, kind='stable')
+    X, y, price_sequences = X[order], y[order], price_sequences[order]
+    target_times = df_features['target_time'].values[order]
+
+    split_idx = int(len(X) * (1 - TEST_FRACTION))
+    if split_idx < 1 or split_idx >= len(X):
+        raise ValueError(
+            f"Cannot split {len(X)} samples at test_fraction={TEST_FRACTION}"
+        )
+
+    X_train, X_test = X[:split_idx], X[split_idx:]
+    y_train, y_test = y[:split_idx], y[split_idx:]
+    seq_train, seq_test = price_sequences[:split_idx], price_sequences[split_idx:]
+
+    # Guard the property the split exists to provide.
+    assert target_times[split_idx - 1] < target_times[split_idx], (
+        "chronological split violated: train overlaps test"
     )
+    print(f"   Train through {target_times[split_idx - 1]}, "
+          f"test from {target_times[split_idx]}")
     
     # Scale features
     scaler = StandardScaler()
