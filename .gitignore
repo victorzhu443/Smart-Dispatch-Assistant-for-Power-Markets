@@ -1,0 +1,24 @@
+# Secrets — never commit. See .env.example for the required variables.
+.env
+.env.local
+
+# Generated data and model artifacts.
+# Regenerate with the Phase 1-3 scripts; see README "Setup".
+market_data.db
+model.pt
+forecast_model.pkl
+gpt2_dispatch_model/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Django
+frontend.db
+staticfiles/
+
+# OS
+.DS_Store

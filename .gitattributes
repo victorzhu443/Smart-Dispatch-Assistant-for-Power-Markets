@@ -1,0 +1,8 @@
+# Shell scripts must use LF endings — CRLF makes bash fail with
+# "syntax error near unexpected token" regardless of platform.
+*.sh text eol=lf
+
+# Binary artifacts: never newline-normalize or diff these.
+*.db binary
+*.pt binary
+*.png binary
