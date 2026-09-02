@@ -6,13 +6,16 @@ This replaces the previous approach of calling the authenticated api.ercot.com
 endpoint, which returned a snapshot across ~1,000 nodes at a single instant --
 breadth across locations where the model needs depth across time.
 
-Two tables are written, following a raw/clean split:
+Three tables are written, following a raw/clean split:
 
-    spp_raw_15min       As-delivered 15-minute records. Append-only landing
-                        zone; never edited, so any downstream number can be
-                        traced back to what ERCOT actually published.
+    spp_raw_15min       As-delivered real-time 15-minute records. Append-only
+                        landing zone; never edited, so any downstream number
+                        can be traced back to what ERCOT actually published.
     market_data_hourly  Hourly means derived from the raw table. What the
                         feature pipeline consumes.
+    dam_prices_hourly   Day-ahead clearing prices. The day-ahead price is the
+                        market's own forecast of real-time, so it is the
+                        benchmark any model has to beat to be worth running.
 
 Timestamps are stored in UTC. ERCOT publishes in Central Prevailing Time using
 hour-ending convention (Delivery Hour 1-24, where hour 1 covers 00:00-01:00),
@@ -45,8 +48,16 @@ from sqlalchemy import create_engine, text
 MIS_LIST_URL = "https://www.ercot.com/misapp/servlets/IceDocListJsonWS"
 MIS_DOWNLOAD_URL = "https://www.ercot.com/misdownload/servlets/mirDownload"
 
-# Report 13061: "Historical RTM Load Zone and Hub Prices", one archive per year.
+# Annual archives, one per year, published back to 2010.
+#   13061  Real-time market settlement point prices (15-minute)
+#   13060  Day-ahead market settlement point prices (hourly)
+#
+# The day-ahead price matters as more than another feature: it is the market's
+# own published forecast of the real-time price, so it is the benchmark a
+# forecaster has to beat to be worth anything. Naive baselines are a floor;
+# day-ahead is the bar.
 SPP_REPORT_TYPE_ID = 13061
+DAM_REPORT_TYPE_ID = 13060
 
 # ERCOT publishes in Central Prevailing Time.
 MARKET_TZ = "America/Chicago"
@@ -87,10 +98,10 @@ def setup_database_connection():
         return create_engine("sqlite:///market_data.db")
 
 
-def list_annual_archives() -> dict[int, int]:
-    """Map year -> ERCOT document id for every published annual SPP archive."""
+def list_annual_archives(report_type_id: int = SPP_REPORT_TYPE_ID) -> dict[int, int]:
+    """Map year -> ERCOT document id for every published annual archive."""
     response = requests.get(
-        MIS_LIST_URL, params={"reportTypeId": SPP_REPORT_TYPE_ID}, timeout=60
+        MIS_LIST_URL, params={"reportTypeId": report_type_id}, timeout=60
     )
     response.raise_for_status()
 
@@ -113,10 +124,11 @@ def list_annual_archives() -> dict[int, int]:
     return archives
 
 
-def download_archive(year: int, doc_id: int, cache_dir: Path = CACHE_DIR) -> Path:
+def download_archive(year: int, doc_id: int, prefix: str = "RTMLZHBSPP",
+                     cache_dir: Path = CACHE_DIR) -> Path:
     """Download one annual archive, caching it so re-runs do not refetch."""
     cache_dir.mkdir(parents=True, exist_ok=True)
-    destination = cache_dir / f"RTMLZHBSPP_{year}.zip"
+    destination = cache_dir / f"{prefix}_{year}.zip"
 
     if destination.exists() and destination.stat().st_size > 0:
         print(f"  {year}: using cached {destination.name}")
@@ -199,6 +211,66 @@ def to_utc_timestamps(df: pd.DataFrame) -> pd.DataFrame:
         MARKET_TZ,
         ambiguous=is_first_pass.to_numpy(),
         nonexistent="raise",  # spring-forward hours should simply be absent
+    )
+
+    out = df.copy()
+    out["timestamp_utc"] = local_aware.dt.tz_convert("UTC")
+    return out
+
+
+def parse_dam_archive(archive_path: Path, hubs: list[str]) -> pd.DataFrame:
+    """Read one annual day-ahead archive into hourly records for the hubs.
+
+    The day-ahead layout differs from real-time: it is already hourly, so there
+    is no interval column, "Hour Ending" is a string like "01:00" rather than
+    an integer, and the settlement point column is named differently.
+    """
+    with zipfile.ZipFile(archive_path) as zf:
+        workbook_name = zf.namelist()[0]
+        workbook = pd.ExcelFile(io.BytesIO(zf.read(workbook_name)))
+
+        monthly_frames = []
+        for sheet in workbook.sheet_names:
+            frame = pd.read_excel(workbook, sheet_name=sheet)
+            frame = frame[frame["Settlement Point"].isin(hubs)]
+            if not frame.empty:
+                monthly_frames.append(frame)
+
+    if not monthly_frames:
+        raise IngestionError(
+            f"{archive_path.name}: no day-ahead rows for hubs {hubs}"
+        )
+
+    df = pd.concat(monthly_frames, ignore_index=True)
+    return df.rename(
+        columns={
+            "Delivery Date": "delivery_date",
+            "Hour Ending": "hour_ending",
+            "Repeated Hour Flag": "repeated_hour_flag",
+            "Settlement Point": "settlement_point",
+            "Settlement Point Price": "price",
+        }
+    )
+
+
+def dam_to_utc_timestamps(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert day-ahead date + "HH:00" hour-ending strings to UTC timestamps.
+
+    Hour ending "01:00" is the interval starting at 00:00, so hour ending
+    "24:00" starts at 23:00 on the same day -- it is not midnight of the next.
+    """
+    hour_ending = (
+        df["hour_ending"].astype(str).str.strip().str.split(":").str[0].astype(int)
+    )
+
+    local_naive = pd.to_datetime(
+        df["delivery_date"], format="%m/%d/%Y"
+    ) + pd.to_timedelta(hour_ending - 1, unit="h")
+
+    is_first_pass = df["repeated_hour_flag"].astype(str).str.upper().str.strip() != "Y"
+
+    local_aware = local_naive.dt.tz_localize(
+        MARKET_TZ, ambiguous=is_first_pass.to_numpy(), nonexistent="raise"
     )
 
     out = df.copy()
@@ -363,6 +435,27 @@ def main() -> int:
     validate(hourly, "hourly")
     hourly_rows = write_table(hourly, engine=engine, table="market_data_hourly")
     print(f"market_data_hourly: {hourly_rows:,} rows total")
+
+    # Day-ahead prices: the benchmark the forecaster has to beat.
+    print("\nDay-ahead market prices")
+    dam_archives = list_annual_archives(DAM_REPORT_TYPE_ID)
+    dam_frames = []
+    for year in years:
+        if year not in dam_archives:
+            print(f"  {year}: no day-ahead archive published, skipping")
+            continue
+        path = download_archive(year, dam_archives[year], prefix="DAMLZHBSPP")
+        dam = dam_to_utc_timestamps(parse_dam_archive(path, args.hubs))
+        validate(dam, f"{year} day-ahead")
+        print(f"  {year}: {len(dam):,} hourly records")
+        dam_frames.append(dam)
+
+    if dam_frames:
+        dam_all = pd.concat(dam_frames, ignore_index=True)[
+            ["timestamp_utc", "settlement_point", "price"]
+        ]
+        dam_rows = write_table(dam_all, engine=engine, table="dam_prices_hourly")
+        print(f"dam_prices_hourly: {dam_rows:,} rows total")
 
     print("\nPer-hub hourly coverage:")
     for point, group in hourly.groupby("settlement_point"):
