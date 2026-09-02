@@ -144,12 +144,24 @@ to a local SQLite file, so Postgres is optional for local work.
 are build artifacts and are not tracked in git. Regenerate them in order:
 
 ```bash
-python data-ingestion/phase_1_5_sql_storage.py        # → market_data table
-python feature-engineering/phase_2_4_feature_matrix_sql.py  # → features table
-python forecasting-model/phase_3_5_save_model.py      # → model.pt
-python llm_rag/phase_4_1_embed_market_data.py         # → market_embeddings.json
-python llm_rag/phase_4_2_finetune_llm.py              # → gpt2_dispatch_model/
+# Backfill from ERCOT's annual archives (no credentials needed)
+python data-ingestion/ingest_ercot_history.py --years 2024 2025 2026
+
+# Top up to the current interval; safe to re-run, safe on cron
+python data-ingestion/ingest_recent.py
+
+# Train the served model
+python forecasting-model/train_model.py               # → forecast_model.joblib
 ```
+
+Keep it current with cron:
+
+```cron
+*/15 * * * * cd /path/to/repo && python data-ingestion/ingest_recent.py >> logs/ingest.log 2>&1
+```
+
+Both ingestion paths are idempotent on `(timestamp, settlement_point)`, so a
+re-run or an overlapping window converges rather than duplicating.
 
 Phases 1 and 4.2 are the slow ones; 4.2 needs a GPU to be comfortable. The query
 API refuses to start without `gpt2_dispatch_model/` and `market_embeddings.json`.
@@ -238,8 +250,8 @@ Ordered by how much they'd need fixing before this is more than a demo.
 3. ~~**Only five minutes of real market data was ever ingested.**~~
    **Fixed.** `data-ingestion/ingest_ercot_history.py` pulls 24 months of
    hourly hub prices plus day-ahead prices from ERCOT's public MIS, which
-   needs no credentials. Scheduled ingestion (PRD step 1.6) is still
-   unimplemented, so the window does not advance on its own.
+   needs no credentials, and `ingest_recent.py` tops up from the rolling
+   15-minute feed (PRD step 1.6), so a cron entry keeps the window current.
 4. **Scarcity hours are unforecast.** Walk-forward across 19 folds, every
    predictor — including the market's own day-ahead price — is wrong by
    roughly $600–700 on hours above $200/MWh. Those are the hours that decide
