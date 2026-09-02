@@ -22,6 +22,7 @@ that looks like a full-confidence answer when it is not.
     hour not computable         422 naming what is missing
     live forecast, stale data   503 stating the age
     interval too wide           forecast returned, recommendation withheld
+    model behind the data       served, flagged degraded, retrain named
 
 Endpoints:
     GET /forecast[?timestamp=&marginal_cost=]   quantiles + dispatch call
@@ -60,6 +61,20 @@ MAX_DATA_AGE_HOURS = float(os.getenv("MAX_DATA_AGE_HOURS", "6"))
 # Above this spread the distribution is too wide to act on, so the forecast is
 # returned but the recommendation is withheld rather than guessed.
 MAX_INTERVAL_WIDTH = float(os.getenv("MAX_INTERVAL_WIDTH", "400"))
+
+# How far the data may run ahead of the model's training cutoff before the
+# forecast is flagged.
+#
+# This service already refuses to serve on data more than a few hours old, but
+# it had no equivalent check on the model, so it would serve one trained eight
+# months ago against today's prices reporting degraded=false. A model that has
+# never seen the current regime is exactly as misleading as stale input, and
+# the asymmetry meant only one of the two was ever visible.
+#
+# Unlike stale data, a stale model is degraded rather than unusable: it is
+# still a real prediction, just fitted to an older market. So this flags and
+# keeps serving instead of refusing.
+MAX_MODEL_LAG_DAYS = float(os.getenv("MAX_MODEL_LAG_DAYS", "30"))
 
 DEFAULT_MARGINAL_COST = 45.0
 
@@ -143,6 +158,15 @@ class ForecastService:
     @property
     def hub(self) -> str:
         return self.artifact["hub"] if self.artifact else "HB_HOUSTON"
+
+    def model_lag_days(self, latest: pd.Timestamp | None) -> float | None:
+        """How far the available data runs past the model's training cutoff."""
+        if self.artifact is None or latest is None:
+            return None
+        cutoff = pd.Timestamp(self.artifact["data_cutoff"])
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.tz_localize("UTC")
+        return max(0.0, (latest - cutoff).total_seconds() / 86400)
 
     def latest_data_time(self) -> pd.Timestamp | None:
         try:
@@ -346,15 +370,35 @@ app = Flask(__name__)
 CORS(app)
 
 
-def _provenance(result: dict, data_age_hours: float | None) -> dict:
+def _provenance(result: dict, data_age_hours: float | None,
+                latest: "pd.Timestamp | None" = None) -> dict:
     artifact = service.artifact
+    lag_days = service.model_lag_days(latest)
+    model_stale = lag_days is not None and lag_days > MAX_MODEL_LAG_DAYS
+
+    # A stale model is a degraded answer even though the artifact loaded fine.
+    degraded = bool(result["degraded"] or model_stale)
+
+    if result["degraded"]:
+        reason = service.load_error
+    elif model_stale:
+        reason = (f"model trained through "
+                  f"{artifact['data_cutoff']:%Y-%m-%d}, "
+                  f"{lag_days:,.0f} days behind the data "
+                  f"(limit {MAX_MODEL_LAG_DAYS:.0f}); retrain with "
+                  f"forecasting-model/train_model.py")
+    else:
+        reason = None
+
     return {
         "model": result["model"],
         "model_version": artifact["version"] if artifact else None,
-        "degraded": result["degraded"],
-        "fallback_reason": service.load_error if result["degraded"] else None,
+        "degraded": degraded,
+        "fallback_reason": reason,
         "training_cutoff": (artifact["data_cutoff"].isoformat()
                             if artifact else None),
+        "model_lag_days": round(lag_days, 1) if lag_days is not None else None,
+        "model_stale": model_stale,
         "data_age_hours": (round(data_age_hours, 1)
                            if data_age_hours is not None else None),
         "hub": service.hub,
@@ -428,7 +472,7 @@ def forecast_endpoint():
         "forecast": {k: round(v, 2) for k, v in result["forecast"].items()},
         "currency": "USD/MWh",
         "recommendation": recommend(result["forecast"], marginal_cost),
-        "provenance": _provenance(result, data_age),
+        "provenance": _provenance(result, data_age, latest),
         "generated_at": now.isoformat(),
     })
 
@@ -509,7 +553,7 @@ def forecast_range_endpoint():
         "currency": "USD/MWh",
         "series": hours_out,
         "provenance": _provenance(
-            {"model": model_name, "degraded": degraded}, data_age
+            {"model": model_name, "degraded": degraded}, data_age, latest
         ),
         "generated_at": now.isoformat(),
     })
@@ -532,9 +576,12 @@ def health_check():
     # queries still work, hence degraded rather than unhealthy.
     data_fresh = age_hours is not None and age_hours <= MAX_DATA_AGE_HOURS
 
+    lag_days = service.model_lag_days(latest)
+    model_current = lag_days is None or lag_days <= MAX_MODEL_LAG_DAYS
+
     if not database_ok:
         status, code = "unhealthy", 503
-    elif not model_ok or not data_fresh:
+    elif not model_ok or not data_fresh or not model_current:
         status, code = "degraded", 200
     else:
         status, code = "healthy", 200
@@ -549,7 +596,12 @@ def health_check():
                 f"stale: {age_hours:,.1f}h old, limit {MAX_DATA_AGE_HOURS:.0f}h"
                 if age_hours is not None else "unknown"
             ),
+            "model_currency": "ok" if model_current else (
+                f"stale: {lag_days:,.0f} days behind the data, "
+                f"limit {MAX_MODEL_LAG_DAYS:.0f}"
+            ),
         },
+        "model_lag_days": round(lag_days, 1) if lag_days is not None else None,
         "model_version": service.artifact["version"] if model_ok else None,
         "hub": service.hub,
         "latest_data": latest.isoformat() if latest is not None else None,

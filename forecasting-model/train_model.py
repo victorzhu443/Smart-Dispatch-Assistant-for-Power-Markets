@@ -17,6 +17,15 @@ metadata for the API to describe exactly what it is answering with:
 Usage:
     python forecasting-model/train_model.py
     python forecasting-model/train_model.py --hub HB_WEST --holdout-months 3
+
+Cron (retrain only once the model has fallen a week behind the data):
+    0 4 * * * cd /path/to/repo && python forecasting-model/train_model.py \\
+              --if-stale-days 7 >> logs/train.log 2>&1
+
+Without something like that entry, the served model drifts away from the
+market exactly as the data drifted away from reality before scheduled
+ingestion existed. The API reports the lag either way, so the failure is at
+least visible rather than silent.
 """
 from __future__ import annotations
 
@@ -137,11 +146,35 @@ def main() -> int:
     parser.add_argument("--hub", default="HB_HOUSTON")
     parser.add_argument("--holdout-months", type=int, default=3)
     parser.add_argument("--out", type=Path, default=DEFAULT_ARTIFACT)
+    parser.add_argument(
+        "--if-stale-days", type=float, default=None,
+        help=("only retrain when the existing artifact is this many days "
+              "behind the data; exit 0 otherwise. Makes this safe on cron."),
+    )
     args = parser.parse_args()
 
     engine = wf.setup_database_connection()
     df = wf.load_prices(engine, args.hub)
     print(f"Loaded {len(df):,} hours for {args.hub}")
+
+    if args.if_stale_days is not None and args.out.exists():
+        # Cron calls this every day; retraining daily is wasted work, and never
+        # retraining is how the served model silently falls behind the market.
+        try:
+            existing = joblib.load(args.out)
+            cutoff = pd.Timestamp(existing["data_cutoff"])
+            if cutoff.tzinfo is None:
+                cutoff = cutoff.tz_localize("UTC")
+            lag_days = (df["timestamp_utc"].max() - cutoff).total_seconds() / 86400
+            if lag_days < args.if_stale_days:
+                print(f"Artifact {existing['version']} is {lag_days:,.1f} days "
+                      f"behind the data (threshold {args.if_stale_days:,.0f}); "
+                      f"nothing to do.")
+                return 0
+            print(f"Artifact {existing['version']} is {lag_days:,.1f} days "
+                  f"behind; retraining.")
+        except Exception as exc:
+            print(f"Could not read the existing artifact ({exc}); retraining.")
 
     artifact = train(df, args.hub, args.holdout_months)
     joblib.dump(artifact, args.out)
