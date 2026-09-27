@@ -30,27 +30,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import sys
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-def _load(relative_path, module_name):
-    spec = importlib.util.spec_from_file_location(
-        module_name, REPO_ROOT / relative_path
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-wf = _load("forecasting-model/walk_forward.py", "walk_forward")
+from forecasting_model import walk_forward as wf
 
 QUANTILES = (0.10, 0.50, 0.90)
 SEED = 42

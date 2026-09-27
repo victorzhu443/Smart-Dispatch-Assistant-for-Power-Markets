@@ -40,6 +40,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, inspect, text
 
+from common.db import setup_database_connection
+
 # Sentinel for rows that predate lineage tracking. Explicit beats NULL here:
 # "we do not know" is different from "nobody has filled this in yet".
 PRE_MIGRATION = "pre-migration"
@@ -119,23 +121,6 @@ TABLES: dict[str, dict] = {
         ],
     },
 }
-
-
-def setup_database_connection():
-    try:
-        pg = (
-            f"postgresql://{os.getenv('POSTGRES_USER', 'postgres')}:"
-            f"{os.getenv('POSTGRES_PASSWORD', 'password')}@"
-            f"{os.getenv('POSTGRES_HOST', 'localhost')}:"
-            f"{os.getenv('POSTGRES_PORT', '5432')}/"
-            f"{os.getenv('POSTGRES_DATABASE', 'smart_dispatch')}"
-        )
-        engine = create_engine(pg)
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        return engine
-    except Exception:
-        return create_engine("sqlite:///market_data.db")
 
 
 def describe(engine, table: str) -> dict:

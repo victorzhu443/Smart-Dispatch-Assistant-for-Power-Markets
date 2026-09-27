@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 import pandas as pd
 from sqlalchemy import text
 
-import schema as schema_module
+from data_ingestion import schema as schema_module
 
 RUNS_TABLE = "data_quality_runs"
 

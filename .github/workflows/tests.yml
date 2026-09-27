@@ -43,5 +43,5 @@ jobs:
 
       - name: Verify the schema definition applies to an empty database
         run: |
-          python data-ingestion/schema.py --migrate
-          python data-ingestion/schema.py --check
+          python -m data_ingestion.schema --migrate
+          python -m data_ingestion.schema --check

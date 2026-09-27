@@ -25,8 +25,8 @@ next month, step forward. 19 folds, **13,182 out-of-sample hours** at
 HB_HOUSTON. Every predictor scored on exactly the same hours.
 
 ```bash
-python data-ingestion/ingest_ercot_history.py     # ~1 min, no credentials
-python forecasting-model/walk_forward.py
+python -m data_ingestion.ingest_ercot_history     # ~1 min, no credentials
+python -m forecasting_model.walk_forward
 ```
 
 | Predictor | RMSE | MAE | Peak hours | **Scarcity hours** |
@@ -74,7 +74,7 @@ rather than the model being exceptional.
 
 The single-split number was not wrong, but it was not representative, and it is
 the reason walk-forward exists. Reproduce it with
-`python forecasting-model/phase_3_4_evaluate_rmse.py`.
+`python -m forecasting_model.phase_3_4_evaluate_rmse`.
 
 Note also that `phase_3_4`'s "last-hour baseline" is not persistence — it is
 `np.mean(y_train[-3:])` held constant across the whole test set, which is why
@@ -90,7 +90,7 @@ peaker at $45/MWh marginal cost and $5,000 per start over the same 13,182
 out-of-sample hours, charging a start cost on every off-to-on transition.
 
 ```bash
-python forecasting-model/dispatch.py
+python -m forecasting_model.dispatch
 ```
 
 Quantiles come from gradient boosting fit with pinball loss at P10/P50/P90,
@@ -149,16 +149,16 @@ with real numbers, by the quantile forecast and dispatch rule above.
 
 | Path | Phase | Contents |
 | --- | --- | --- |
-| `data-ingestion/` | 1 | `schema.py` (DDL + migrations), `ingest_ercot_history.py` (annual backfill, no credentials), `ingest_recent.py` (cron top-up). |
-| `feature-engineering/` | 2 | SQL load → hourly resample → 24h sliding windows → technical features (mean, std, trend slope, moving averages, momentum) → `features` table. |
-| `forecasting-model/` | 3 | `backtest.py` (baselines), `walk_forward.py` (rolling validation), `train_model.py` (versioned quantile artifact), `dispatch.py` (decisions in dollars), plus the original `PowerMarketLSTM` phase scripts. |
+| `data_ingestion/` | 1 | `schema.py` (DDL + migrations), `ingest_ercot_history.py` (annual backfill, no credentials), `ingest_recent.py` (cron top-up). |
+| `feature_engineering/` | 2 | SQL load → hourly resample → 24h sliding windows → technical features (mean, std, trend slope, moving averages, momentum) → `features` table. |
+| `forecasting_model/` | 3 | `backtest.py` (baselines), `walk_forward.py` (rolling validation), `train_model.py` (versioned quantile artifact), `dispatch.py` (decisions in dollars), plus the original `PowerMarketLSTM` phase scripts. |
 | `backend/` | 5 | `phase_5_1_forecast_api.py` — serves the quantile model and dispatch call on port 5001, with provenance and a fallback ladder. Docker and minikube deploy scripts. |
 | `frontend/` | 6 | Django project (`smart_ui`) with a `dashboard` app: the dispatch outlook — P10–P90 band, marginal-cost line, per-hour run/hold call — proxying to the forecast API server-side to avoid CORS. |
 | `k8s-*.yaml` | 5.3 | Namespace, deployments, services and ingress for local minikube. |
 
 Phase 4 (retrieval/LLM) was removed, see above. Phase 7 (monitoring) is not
 implemented. Phase 8 (dispatch simulation) is covered by
-`forecasting-model/dispatch.py`.
+`forecasting_model.dispatch`.
 
 ## Setup
 
@@ -215,20 +215,20 @@ are build artifacts and are not tracked in git. Regenerate them in order:
 
 ```bash
 # Backfill from ERCOT's annual archives (no credentials needed)
-python data-ingestion/ingest_ercot_history.py --years 2024 2025 2026
+python -m data_ingestion.ingest_ercot_history --years 2024 2025 2026
 
 # Top up to the current interval; safe to re-run, safe on cron
-python data-ingestion/ingest_recent.py
+python -m data_ingestion.ingest_recent
 
 # Train the served model
-python forecasting-model/train_model.py               # → forecast_model.joblib
+python -m forecasting_model.train_model               # → forecast_model.joblib
 ```
 
 The schema is explicit and version-controlled. Apply or verify it with:
 
 ```bash
-python data-ingestion/schema.py --check     # report drift, change nothing
-python data-ingestion/schema.py --migrate   # apply, preserving every row
+python -m data_ingestion.schema --check     # report drift, change nothing
+python -m data_ingestion.schema --migrate   # apply, preserving every row
 ```
 
 Every table has a primary key on `(settlement_point, timestamp_utc)`, `NOT NULL`
@@ -239,7 +239,7 @@ where it came from.
 Keep it current with cron:
 
 ```cron
-*/15 * * * * cd /path/to/repo && python data-ingestion/ingest_recent.py >> logs/ingest.log 2>&1
+*/15 * * * * cd /path/to/repo && python -m data_ingestion.ingest_recent >> logs/ingest.log 2>&1
 ```
 
 Both ingestion paths are idempotent on `(timestamp, settlement_point)`, so a
@@ -253,7 +253,7 @@ API refuses to start without `gpt2_dispatch_model/` and `market_embeddings.json`
 The forecast API serves the trained artifact, so train it first:
 
 ```bash
-python forecasting-model/train_model.py     # -> forecast_model.joblib
+python -m forecasting_model.train_model     # -> forecast_model.joblib
 python backend/phase_5_1_forecast_api.py    # http://localhost:5001
 ```
 
@@ -316,7 +316,7 @@ Kubernetes (minikube) deployment: `bash backend/deploy_k8s.sh`.
 Ordered by how much they'd need fixing before this is more than a demo.
 
 1. ~~**The pipeline silently substitutes synthetic data when real data is
-   thin.**~~ **Fixed.** Every feature-engineering script carried an
+   thin.**~~ **Fixed.** Every feature_engineering script carried an
    `extend_hourly_data()` / `simulate_historical_data()` path that fabricated
    random-walk prices when the real pull was too small, and it fired without
    failing or flagging the output — the `features` table looked identical
@@ -329,7 +329,7 @@ Ordered by how much they'd need fixing before this is more than a demo.
    trained on. Now a chronological split, asserted in
    `tests/test_chronological_split.py`.
 3. ~~**Only five minutes of real market data was ever ingested.**~~
-   **Fixed.** `data-ingestion/ingest_ercot_history.py` pulls 24 months of
+   **Fixed.** `data_ingestion.ingest_ercot_history` pulls 24 months of
    hourly hub prices plus day-ahead prices from ERCOT's public MIS, which
    needs no credentials, and `ingest_recent.py` tops up from the rolling
    15-minute feed (PRD step 1.6), so a cron entry keeps the window current.
@@ -348,7 +348,7 @@ Ordered by how much they'd need fixing before this is more than a demo.
    trained a `RandomForestRegressor` at import time and predicted from
    hardcoded feature values, so the thing served was never the thing
    evaluated. It now loads the versioned artifact from
-   `forecasting-model/train_model.py` and reports which model answered.
+   `forecasting_model.train_model` and reports which model answered.
 7. ~~**The forecast API's features are mostly hardcoded.**~~ **Fixed.**
    Features are now built from real history by the same code path used in
    training, so serving and evaluation cannot drift apart.
@@ -356,9 +356,11 @@ Ordered by how much they'd need fixing before this is more than a demo.
    `Dockerfile.txt`; it also copied a moved source path, baked in gitignored
    data and `.env`, and never installed the `curl` its HEALTHCHECK calls.
    Not yet verified against a live Docker daemon.
-9. **Heavy duplication across phase scripts.** `setup_database_connection()` and
-   the whole `ERCOTClient` class are copy-pasted verbatim into roughly ten files;
-   a change to the auth flow means ten edits.
+9. ~~**Heavy duplication across phase scripts.**~~ **Fixed.**
+   `setup_database_connection()` was copy-pasted into twelve files. It stayed
+   duplicated because the packages were named with hyphens and so were not
+   importable; they are now `data_ingestion`, `feature_engineering` and
+   `forecasting_model`, and the shared helper lives in `common/db.py`.
 10. ~~**No CI.**~~ **Fixed.** GitHub Actions runs the suite on every push and
     pull request across Python 3.10 and 3.12, byte-compiles every tracked
     file, and verifies the schema applies to an empty database.

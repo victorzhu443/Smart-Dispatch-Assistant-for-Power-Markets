@@ -9,7 +9,7 @@ feature values -- price_mean fixed at 35.0, trend_slope at 0.0, momentum at 0.0
 time-of-day heuristic wearing a model's clothes, it was never the model that
 had been evaluated, and no two processes served the same thing.
 
-This loads the artifact produced by forecasting-model/train_model.py and serves
+This loads the artifact produced by python -m forecasting_model.train_model and serves
 that, with enough provenance on every response to tell what answered.
 
 Fallback policy: degrade visibly, never invent. Every degraded response is
@@ -31,7 +31,6 @@ Endpoints:
 """
 from __future__ import annotations
 
-import importlib.util
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -79,23 +78,7 @@ MAX_MODEL_LAG_DAYS = float(os.getenv("MAX_MODEL_LAG_DAYS", "30"))
 DEFAULT_MARGINAL_COST = 45.0
 
 
-def _load_sibling(relative_path: str, module_name: str):
-    """Import a module from a hyphenated directory.
-
-    forecasting-model/ is not a valid Python identifier, so it cannot be
-    imported normally. Loading by path keeps the feature construction in one
-    place instead of duplicating it here, which is how serving and training
-    drift apart.
-    """
-    spec = importlib.util.spec_from_file_location(
-        module_name, REPO_ROOT / relative_path
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-wf = _load_sibling("forecasting-model/walk_forward.py", "walk_forward")
+from forecasting_model import walk_forward as wf
 
 
 class ForecastService:
@@ -386,7 +369,7 @@ def _provenance(result: dict, data_age_hours: float | None,
                   f"{artifact['data_cutoff']:%Y-%m-%d}, "
                   f"{lag_days:,.0f} days behind the data "
                   f"(limit {MAX_MODEL_LAG_DAYS:.0f}); retrain with "
-                  f"forecasting-model/train_model.py")
+                  f"python -m forecasting_model.train_model")
     else:
         reason = None
 
@@ -424,7 +407,7 @@ def forecast_endpoint():
     if latest is None:
         return jsonify({
             "error": "no market data available",
-            "detail": "run data-ingestion/ingest_ercot_history.py",
+            "detail": "run python -m data_ingestion.ingest_ercot_history",
         }), 503
 
     now = datetime.now(timezone.utc)
@@ -450,7 +433,7 @@ def forecast_endpoint():
                 "detail": (f"latest hour is {latest.isoformat()}, "
                            f"{data_age:,.1f}h old; the limit for a live "
                            f"forecast is {MAX_DATA_AGE_HOURS:.0f}h"),
-                "remedy": ("re-run data-ingestion/ingest_ercot_history.py, or "
+                "remedy": ("re-run python -m data_ingestion.ingest_ercot_history, or "
                            "request a specific historical hour with "
                            "?timestamp="),
                 "latest_available": latest.isoformat(),
@@ -505,7 +488,7 @@ def forecast_range_endpoint():
     if latest is None:
         return jsonify({
             "error": "no market data available",
-            "detail": "run data-ingestion/ingest_ercot_history.py",
+            "detail": "run python -m data_ingestion.ingest_ercot_history",
         }), 503
 
     raw_start = (request.args.get("start") or "").strip()
@@ -637,7 +620,7 @@ def main() -> None:
     logger.info("Forecast API starting on :5001")
     if service.artifact is None:
         logger.warning("no model artifact — serving the labelled fallback. "
-                       "Run: python forecasting-model/train_model.py")
+                       "Run: python -m forecasting_model.train_model")
     app.run(host="0.0.0.0", port=5001, debug=False)
 
 

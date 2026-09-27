@@ -26,39 +26,39 @@ setup:  ## Install dependencies
 	$(PYTHON) -m pip install -r requirements_minimal.txt
 
 schema:  ## Apply the database schema (safe to re-run)
-	$(PYTHON) data-ingestion/schema.py --migrate
+	$(PYTHON) -m data_ingestion.schema --migrate
 
 check-schema:  ## Report schema drift without changing anything
-	$(PYTHON) data-ingestion/schema.py --check
+	$(PYTHON) -m data_ingestion.schema --check
 
 $(DB): schema
 
 backfill: schema  ## Backfill history from ERCOT annual archives
-	$(PYTHON) data-ingestion/ingest_ercot_history.py --years $(YEARS)
+	$(PYTHON) -m data_ingestion.ingest_ercot_history --years $(YEARS)
 
 ingest: schema  ## Top up to the current interval (cron target)
-	$(PYTHON) data-ingestion/ingest_recent.py
+	$(PYTHON) -m data_ingestion.ingest_recent
 
 features: ingest  ## Rebuild the feature matrix from current data
-	$(PYTHON) feature-engineering/phase_2_4_feature_matrix_sql.py
+	$(PYTHON) -m feature_engineering.phase_2_4_feature_matrix_sql
 
 train: features  ## Retrain the served model if it has fallen behind
-	$(PYTHON) forecasting-model/train_model.py --if-stale-days 7 --hub $(HUB)
+	$(PYTHON) -m forecasting_model.train_model --if-stale-days 7 --hub $(HUB)
 
 quality:  ## Report table freshness and recent quality checks
-	$(PYTHON) data-ingestion/quality.py --report
+	$(PYTHON) -m data_ingestion.quality --report
 
 check-fresh:  ## Exit non-zero if any table is stale (cron/alerting target)
-	$(PYTHON) data-ingestion/quality.py --check
+	$(PYTHON) -m data_ingestion.quality --check
 
 backtest:  ## Score the baselines over all history
-	$(PYTHON) forecasting-model/backtest.py --hub $(HUB)
+	$(PYTHON) -m forecasting_model.backtest --hub $(HUB)
 
 walk-forward:  ## Rolling-origin validation of the model against baselines
-	$(PYTHON) forecasting-model/walk_forward.py --hub $(HUB)
+	$(PYTHON) -m forecasting_model.walk_forward --hub $(HUB)
 
 dispatch:  ## Simulate dispatch decisions and report profit
-	$(PYTHON) forecasting-model/dispatch.py --hub $(HUB)
+	$(PYTHON) -m forecasting_model.dispatch --hub $(HUB)
 
 serve:  ## Run the forecast API on :5001
 	$(PYTHON) backend/phase_5_1_forecast_api.py

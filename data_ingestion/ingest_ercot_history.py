@@ -44,7 +44,9 @@ import pandas as pd
 import requests
 from sqlalchemy import create_engine, text
 
-import quality
+from common.db import setup_database_connection
+
+from data_ingestion import quality
 
 # ERCOT public MIS endpoints. Anonymous access; no API key.
 MIS_LIST_URL = "https://www.ercot.com/misapp/servlets/IceDocListJsonWS"
@@ -78,26 +80,6 @@ CACHE_DIR = Path("data-ingestion/.ercot_cache")
 
 class IngestionError(RuntimeError):
     """Ingestion could not produce trustworthy data."""
-
-
-def setup_database_connection():
-    """Connect to PostgreSQL if configured, else the local SQLite file."""
-    try:
-        pg = (
-            f"postgresql://{os.getenv('POSTGRES_USER', 'postgres')}:"
-            f"{os.getenv('POSTGRES_PASSWORD', 'password')}@"
-            f"{os.getenv('POSTGRES_HOST', 'localhost')}:"
-            f"{os.getenv('POSTGRES_PORT', '5432')}/"
-            f"{os.getenv('POSTGRES_DATABASE', 'smart_dispatch')}"
-        )
-        engine = create_engine(pg)
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        print("PostgreSQL connection successful")
-        return engine
-    except Exception:
-        print("PostgreSQL not available, using SQLite (market_data.db)")
-        return create_engine("sqlite:///market_data.db")
 
 
 def list_annual_archives(report_type_id: int = SPP_REPORT_TYPE_ID) -> dict[int, int]:

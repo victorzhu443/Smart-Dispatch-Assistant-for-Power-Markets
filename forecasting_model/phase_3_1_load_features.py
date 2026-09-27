@@ -9,36 +9,11 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+
+from common.db import setup_database_connection
 from sklearn.preprocessing import StandardScaler
 
 load_dotenv()
-
-def setup_database_connection():
-    """Setup database connection"""
-    try:
-        # Try PostgreSQL first
-        pg_user = os.getenv('POSTGRES_USER', 'postgres')
-        pg_password = os.getenv('POSTGRES_PASSWORD', 'password')
-        pg_host = os.getenv('POSTGRES_HOST', 'localhost')
-        pg_port = os.getenv('POSTGRES_PORT', '5432')
-        pg_database = os.getenv('POSTGRES_DATABASE', 'smart_dispatch')
-        
-        pg_connection_string = f"postgresql://{pg_user}:{pg_password}@{pg_host}:{pg_port}/{pg_database}"
-        engine = create_engine(pg_connection_string)
-        
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        
-        print("✅ PostgreSQL connection successful")
-        return engine, "postgresql"
-        
-    except Exception as e:
-        print(f"⚠️ PostgreSQL not available, using SQLite")
-        sqlite_path = "market_data.db"
-        sqlite_connection_string = f"sqlite:///{sqlite_path}"
-        engine = create_engine(sqlite_connection_string)
-        print(f"✅ SQLite connection successful: {sqlite_path}")
-        return engine, "sqlite"
 
 def load_feature_matrix_from_sql(engine, table_name="features"):
     """

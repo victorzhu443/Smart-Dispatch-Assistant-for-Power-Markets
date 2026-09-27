@@ -39,8 +39,8 @@ import pandas as pd
 import requests
 
 # Sibling module: data-ingestion/ is on sys.path when this runs as a script.
-import ingest_ercot_history as base
-import quality
+from data_ingestion import ingest_ercot_history as base
+from data_ingestion import quality
 
 # Report 12301: settlement point prices for one 15-minute interval, published
 # as it settles. Rolling window of about seven days.

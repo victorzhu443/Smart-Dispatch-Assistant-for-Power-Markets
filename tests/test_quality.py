@@ -9,32 +9,16 @@ staleness elsewhere.
 
 Run with:  pytest tests/ -v
 """
-import importlib.util
+import importlib
 import sqlite3
-import sys
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-INGEST_DIR = REPO_ROOT / "data-ingestion"
 
-if str(INGEST_DIR) not in sys.path:
-    sys.path.insert(0, str(INGEST_DIR))
-
-
-def _load(path, name):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-schema = _load(INGEST_DIR / "schema.py", "schema")
-quality = _load(INGEST_DIR / "quality.py", "quality")
+schema = importlib.import_module('data_ingestion.schema')
+quality = importlib.import_module('data_ingestion.quality')
 
 
 def _stamp(hours_ago: float) -> str:

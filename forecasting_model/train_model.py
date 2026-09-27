@@ -44,7 +44,7 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 
 # Sibling module: this file runs from inside forecasting-model/, which is on
 # sys.path when invoked as a script.
-import walk_forward as wf
+from forecasting_model import walk_forward as wf
 
 QUANTILES = (0.10, 0.50, 0.90)
 SEED = 42

@@ -45,6 +45,8 @@ from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy import create_engine, text
 
+from common.db import setup_database_connection
+
 MARKET_TZ = "America/Chicago"
 SEED = 42
 SPIKE_THRESHOLD = 200.0
@@ -58,23 +60,6 @@ class WalkForwardError(RuntimeError):
     pass
 
 
-def setup_database_connection():
-    try:
-        pg = (
-            f"postgresql://{os.getenv('POSTGRES_USER', 'postgres')}:"
-            f"{os.getenv('POSTGRES_PASSWORD', 'password')}@"
-            f"{os.getenv('POSTGRES_HOST', 'localhost')}:"
-            f"{os.getenv('POSTGRES_PORT', '5432')}/"
-            f"{os.getenv('POSTGRES_DATABASE', 'smart_dispatch')}"
-        )
-        engine = create_engine(pg)
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        return engine
-    except Exception:
-        return create_engine("sqlite:///market_data.db")
-
-
 def load_prices(engine, hub: str) -> pd.DataFrame:
     rt = pd.read_sql(
         text("SELECT timestamp_utc, price FROM market_data_hourly "
@@ -84,7 +69,7 @@ def load_prices(engine, hub: str) -> pd.DataFrame:
     if rt.empty:
         raise WalkForwardError(
             f"No prices for {hub!r}. Run "
-            f"'python data-ingestion/ingest_ercot_history.py' first."
+            f"'python -m data_ingestion.ingest_ercot_history' first."
         )
     dam = pd.read_sql(
         text("SELECT timestamp_utc, price AS dam FROM dam_prices_hourly "
