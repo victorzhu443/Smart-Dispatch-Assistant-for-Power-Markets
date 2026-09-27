@@ -334,11 +334,20 @@ def _format_timestamp(ts) -> str:
     return pd.Timestamp(ts).strftime(TIMESTAMP_FORMAT)
 
 
-def write_table(df: pd.DataFrame, engine, table: str) -> int:
+def write_table(df: pd.DataFrame, engine, table: str, *,
+                source_report: str | None = None,
+                source_file: str | None = None) -> int:
     """Replace this ingest's (settlement point, time range) rows, then append.
 
     Delete-then-append rather than plain append, so re-running the same years
     does not duplicate rows.
+
+    Since the schema gained primary keys, a delete that fails to match no
+    longer produces silent duplicates -- the append raises instead. That is the
+    intended behaviour: a loud failure beats a quiet double-count.
+
+    Lineage columns are stamped here so every row can name the feed and file it
+    came from. See data-ingestion/schema.py.
     """
     lo = _format_timestamp(df["timestamp_utc"].min())
     hi = _format_timestamp(df["timestamp_utc"].max())
@@ -365,6 +374,9 @@ def write_table(df: pd.DataFrame, engine, table: str) -> int:
     # round-trips identically on both backends.
     out = df.copy()
     out["timestamp_utc"] = out["timestamp_utc"].dt.strftime(TIMESTAMP_FORMAT)
+    out["ingested_at"] = pd.Timestamp.now(tz="UTC").strftime(TIMESTAMP_FORMAT)
+    out["source_report"] = source_report
+    out["source_file"] = source_file
     out.to_sql(table, engine, if_exists="append", index=False, method="multi",
                chunksize=5000)
 
@@ -428,12 +440,15 @@ def main() -> int:
         "timestamp_utc", "settlement_point", "settlement_point_type",
         "price", "repeated_hour_flag",
     ]
-    raw_rows = write_table(raw_all[raw_columns], engine=engine, table="spp_raw_15min")
+    raw_rows = write_table(raw_all[raw_columns], engine=engine,
+                           table="spp_raw_15min",
+                           source_report=f"ercot-mis-{SPP_REPORT_TYPE_ID}")
     print(f"spp_raw_15min: {raw_rows:,} rows total")
 
     hourly = to_hourly(raw_all)
     validate(hourly, "hourly")
-    hourly_rows = write_table(hourly, engine=engine, table="market_data_hourly")
+    hourly_rows = write_table(hourly, engine=engine, table="market_data_hourly",
+                              source_report=f"derived:spp_raw_15min")
     print(f"market_data_hourly: {hourly_rows:,} rows total")
 
     # Day-ahead prices: the benchmark the forecaster has to beat.
@@ -454,7 +469,8 @@ def main() -> int:
         dam_all = pd.concat(dam_frames, ignore_index=True)[
             ["timestamp_utc", "settlement_point", "price"]
         ]
-        dam_rows = write_table(dam_all, engine=engine, table="dam_prices_hourly")
+        dam_rows = write_table(dam_all, engine=engine, table="dam_prices_hourly",
+                               source_report=f"ercot-mis-{DAM_REPORT_TYPE_ID}")
         print(f"dam_prices_hourly: {dam_rows:,} rows total")
 
     print("\nPer-hub hourly coverage:")
