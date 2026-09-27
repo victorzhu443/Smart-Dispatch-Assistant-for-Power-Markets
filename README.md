@@ -201,8 +201,28 @@ nothing enforced that it rebuild after ingestion.
 
 ```bash
 make quality       # freshness of every table + recent check history
-make check-fresh   # exits non-zero if anything is stale — the cron/alert target
+make monitor       # alert if the pipeline has stopped or is failing
 ```
+
+`monitor` separates three signals, because they fail differently and need
+different responses:
+
+| Signal | Means |
+| --- | --- |
+| `data_stale` | The newest row is too old — ingestion is not landing |
+| `job_silent` | No check recorded recently — **our** job is not running, which stale data alone cannot distinguish from a source outage |
+| `check_failed` | The job runs but validations are failing |
+
+It exits non-zero, so cron mails the output — real alerting for a
+single-machine pipeline. Set `ALERT_WEBHOOK_URL` to push instead.
+
+```cron
+0 * * * * cd /path/to/repo && python -m data_ingestion.monitor --quiet
+```
+
+This matters more than it looks: ERCOT's interval feed keeps only about seven
+days. An incremental job that breaks on a Friday and goes unnoticed loses that
+data permanently.
 
 Every validation writes one row to `data_quality_runs`, so pass/fail becomes a
 trend rather than a moment. A threshold catches a cliff; only history catches a
