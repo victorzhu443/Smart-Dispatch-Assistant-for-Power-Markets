@@ -1,0 +1,47 @@
+name: tests
+
+# Runs the suite on every push and pull request. Until now the tests ran only
+# when someone remembered to run them, which means they protected nothing
+# against a change made in a hurry.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the floor the Django pin requires; 3.12 catches deprecations
+        # early. The pipeline itself is version-agnostic.
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_minimal.txt
+          pip install pytest Django
+
+      - name: Check every file compiles
+        run: git ls-files '*.py' | xargs -n1 python -m py_compile
+
+      # No database and no model artifact exist in CI. The suite is built to
+      # skip what genuinely needs them rather than fail, so this run proves the
+      # logic tests stand on their own -- which is what makes them useful.
+      - name: Run tests
+        run: pytest tests/ -q --tb=short
+
+      - name: Verify the schema definition applies to an empty database
+        run: |
+          python data-ingestion/schema.py --migrate
+          python data-ingestion/schema.py --check
