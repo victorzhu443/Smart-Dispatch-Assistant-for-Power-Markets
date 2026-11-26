@@ -9,9 +9,10 @@ Flask-Limiter==3.11.0      # per-key / per-IP throttle on /forecast* (RC-6)
 
 # Shared security primitives: boundary validation, zip budgets, secrets,
 # pinned fetch (SECURITY.md RC-1/2/4/5/6). The repository is private, so CI
-# needs a token with read access: set GH_PAT and rewrite the URL, e.g.
-#   git config --global url."https://${GH_PAT}@github.com/".insteadOf "https://github.com/"
+# and docker build need a token with read access (TOOLKIT_TOKEN):
+#   git config --global url."https://x-access-token:${TOOLKIT_TOKEN}@github.com/".insteadOf "https://github.com/"
 # Local development: pip install -e ../security-agents
+# bump to v0.1.1 once tagged (fail-closed require_secret)
 security-agents[fetch] @ git+https://github.com/victorzhu443/security-agents@v0.1.0
 
 # Database and data processing

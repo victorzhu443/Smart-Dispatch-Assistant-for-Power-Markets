@@ -2,7 +2,13 @@ import os
 from pathlib import Path
 
 from secprim import require_secret
-from secprim.secrets import is_production
+
+try:  # secprim >= 0.1.1: fail-closed label set (staging/qa/typos are not dev)
+    from secprim.secrets import is_dev
+except ImportError:  # 0.1.0 shim; remove when the pin is bumped
+    def is_dev():
+        return (os.environ.get("APP_ENV") or "dev").strip().lower() in {
+            "dev", "development", "test", "testing", "local"}
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -13,10 +19,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # never boot on the dev key by accident.
 SECRET_KEY = require_secret("DJANGO_SECRET_KEY", dev_default="dev-only-smart-dispatch")
 
-# DEBUG follows the environment: on in dev, off in production, unless
-# DJANGO_DEBUG=1/0 says otherwise explicitly.
+# DEBUG follows the environment: on only for an explicit dev/test label (or
+# none), off for production AND for anything unrecognised such as "staging",
+# unless DJANGO_DEBUG=1/0 says otherwise explicitly.
 DEBUG = ((os.environ.get("DJANGO_DEBUG") == "1") if "DJANGO_DEBUG" in os.environ
-         else not is_production())
+         else is_dev())
 # "testserver" is the host Django's own test client sends; without it
 # every request in a test returns 400 before reaching a view.
 ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver"]

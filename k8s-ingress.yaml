@@ -3,20 +3,18 @@ kind: Ingress
 metadata:
   name: smart-dispatch-ingress
   namespace: smart-dispatch
-  # Access control at the edge (SECURITY.md RC-6, layer 1). These are
-  # ingress-nginx annotations, matching `ingressClassName: nginx` below; the
-  # application enforces the same bearer-token check itself, so the ingress is
-  # defence in depth rather than the only gate. If the cluster runs a different
-  # ingress class, translate these to its equivalents.
+  # Edge throttles and ceilings (SECURITY.md RC-6). These are ingress-nginx
+  # annotations, matching `ingressClassName: nginx` below; translate them if
+  # the cluster runs a different class.
+  #
+  # Authentication is NOT done here: the application's bearer-token gate on
+  # /forecast* consumes the Authorization header, and an ingress basic-auth
+  # gate would consume the same header and make the API unreachable. If an
+  # edge authn layer is wanted later, use `auth-url` (an external auth
+  # service), which does not share that header.
   annotations:
-    # Basic-auth gate in front of /forecast. Create the credential file with
-    #   htpasswd -c auth operator && kubectl -n smart-dispatch create secret \
-    #     generic forecast-ingress-auth --from-file=auth
-    nginx.ingress.kubernetes.io/auth-type: basic
-    nginx.ingress.kubernetes.io/auth-secret: forecast-ingress-auth
-    nginx.ingress.kubernetes.io/auth-realm: "Smart Dispatch forecast API"
-    # Per-client throttle; the application's own limit (60/min per key) still
-    # applies behind it.
+    # Per-client throttle; the application's own limit (60/min per key or
+    # address) still applies behind it.
     nginx.ingress.kubernetes.io/limit-rps: "5"
     nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
     nginx.ingress.kubernetes.io/limit-connections: "20"

@@ -371,18 +371,35 @@ PROTECTED_PREFIX = "/forecast"
 RATE_LIMIT = os.environ.get("FORECAST_RATE_LIMIT", "60 per minute")
 
 
-def _rate_limit_key() -> str:
-    """Throttle per bearer token when one is presented, else per client IP."""
+def _presented_token() -> str:
     auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer ") and len(auth) > 7:
-        return "token:" + auth[7:].strip()
+    return auth[7:].strip() if auth.startswith("Bearer ") else ""
+
+
+def _token_is_valid(presented: str) -> bool:
+    # Bytes, not str: compare_digest on str raises for non-ASCII input, which
+    # would turn a malformed header into a 500.
+    return bool(presented) and hmac.compare_digest(
+        presented.encode("utf-8"), FORECAST_API_KEY.encode("utf-8"))
+
+
+def _rate_limit_key() -> str:
+    """Throttle per *verified* bearer token, else per client address -- an
+    unverified token never gets its own bucket, so rotating bad tokens does
+    not escape the per-address limit."""
+    presented = _presented_token()
+    if _token_is_valid(presented):
+        return "token:" + presented
     return "ip:" + (get_remote_address() or "unknown")
 
 
+# Applied as a default limit so it is evaluated in the before-request pass for
+# every non-exempt route, i.e. it also counts requests the auth gate rejects.
+# (A per-route @limiter.limit is evaluated inside the view, after the gate.)
 limiter = Limiter(
     key_func=_rate_limit_key,
     app=app,
-    default_limits=[],
+    default_limits=[lambda: RATE_LIMIT],
     storage_uri=os.environ.get("RATE_LIMIT_STORAGE_URI", "memory://"),
     headers_enabled=True,
 )
@@ -395,9 +412,7 @@ def _require_api_key():
         return None  # CORS preflight carries no credentials by specification
     if not request.path.startswith(PROTECTED_PREFIX):
         return None
-    auth = request.headers.get("Authorization", "")
-    presented = auth[7:].strip() if auth.startswith("Bearer ") else ""
-    if not presented or not hmac.compare_digest(presented, FORECAST_API_KEY):
+    if not _token_is_valid(_presented_token()):
         return jsonify({"error": "unauthorized",
                         "detail": "Authorization: Bearer <FORECAST_API_KEY> required"}), 401
     return None
@@ -452,7 +467,6 @@ def _provenance(result: dict, data_age_hours: float | None,
 
 
 @app.route("/forecast", methods=["GET"])
-@limiter.limit(lambda: RATE_LIMIT)
 def forecast_endpoint():
     if service.engine is None:
         return jsonify({"error": "database unavailable"}), 503
@@ -525,7 +539,6 @@ MAX_RANGE_HOURS = 168
 
 
 @app.route("/forecast/range", methods=["GET"])
-@limiter.limit(lambda: RATE_LIMIT)
 def forecast_range_endpoint():
     """Consecutive hours in one call, for charting a forecast band."""
     if service.engine is None:
@@ -597,6 +610,7 @@ def forecast_range_endpoint():
 
 
 @app.route("/health", methods=["GET"])
+@limiter.exempt
 def health_check():
     """Real readiness. Reports unhealthy when it genuinely cannot serve."""
     latest = service.latest_data_time()
@@ -648,6 +662,7 @@ def health_check():
 
 
 @app.route("/", methods=["GET"])
+@limiter.exempt
 def api_info():
     return jsonify({
         "name": "Smart Dispatch Forecast API",

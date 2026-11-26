@@ -1,4 +1,9 @@
+# syntax=docker/dockerfile:1
 # Dockerfile for Smart Dispatch Forecast API (Phase 5.1)
+#
+# Build (BuildKit; the private toolkit pin in requirements.txt needs a token):
+#   TOOLKIT_TOKEN=<fine-grained PAT, read-only Contents on security-agents> \
+#   docker build --secret id=toolkit_token,env=TOOLKIT_TOKEN -t smart-dispatch-forecast:latest .
 # 3.11: the pinned, non-vulnerable python-dotenv/pytest releases require >=3.10,
 # and the test matrix already runs 3.10/3.12 -- 3.9 was the odd one out.
 FROM python:3.11-slim
@@ -8,7 +13,10 @@ WORKDIR /app
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV FLASK_APP=phase_5_1_forecast_api.py
+ENV FLASK_APP=backend/phase_5_1_forecast_api.py
+# The app resolves REPO_ROOT as the parent of backend/, i.e. /app, which is
+# where compose/k8s mount market_data.db and where forecasting_model/ lives.
+ENV PYTHONPATH=/app
 ENV FLASK_ENV=production
 
 # Install system dependencies
@@ -17,16 +25,28 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first (for better caching)
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies. requirements.txt pins the private
+# security-agents toolkit; the token is a BuildKit secret, mounted only for
+# this step and never written to a layer.
+RUN --mount=type=secret,id=toolkit_token,required=false \
+    if [ -s /run/secrets/toolkit_token ]; then \
+      git config --global url."https://x-access-token:$(cat /run/secrets/toolkit_token)@github.com/".insteadOf "https://github.com/"; \
+    fi \
+    && pip install --no-cache-dir -r requirements.txt \
+    && git config --global --unset-all url."https://x-access-token:$(cat /run/secrets/toolkit_token 2>/dev/null)@github.com/".insteadOf || true
 
-# Copy application code
-COPY backend/phase_5_1_forecast_api.py .
+# Copy application code -- the API module plus the packages it imports
+# (forecasting_model.walk_forward -> common.db), laid out as in the repo so
+# REPO_ROOT (= parent of backend/) is /app.
+COPY backend/phase_5_1_forecast_api.py ./backend/
+COPY forecasting_model/ ./forecasting_model/
+COPY common/ ./common/
 
 # market_data.db is deliberately NOT copied in. It is generated data, not
 # source, so it is gitignored and absent from a fresh clone -- baking it in
@@ -56,5 +76,6 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
 # interface is correct *inside* the container: the port mapping, the k8s
 # Service and the ingress (which carries authn and rate limits) are the
 # perimeter. The application also requires a bearer token on /forecast*.
-CMD ["gunicorn", "--bind", "0.0.0.0:5001", "--workers", "2", "--threads", "4", \
-     "--timeout", "60", "--access-logfile", "-", "phase_5_1_forecast_api:app"]
+CMD ["gunicorn", "--chdir", "/app/backend", "--bind", "0.0.0.0:5001", \
+     "--workers", "2", "--threads", "4", "--timeout", "60", \
+     "--access-logfile", "-", "phase_5_1_forecast_api:app"]

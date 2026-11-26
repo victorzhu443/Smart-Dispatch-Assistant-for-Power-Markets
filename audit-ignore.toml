@@ -1,0 +1,44 @@
+# Accepted dependency risks for the `sca` job (pip-audit --strict).
+# Every entry needs id, reason and expires. On the expiry date the sca job
+# starts FAILING until the entry is removed (fixed) or re-justified with a new
+# date. Nothing is accepted silently or forever. (Shape: security-agents/
+# templates/audit-ignore.toml.)
+#
+# All seven entries below are the flask / flask-cors / scikit-learn MAJORS
+# that SECURITY.md RC-7 defers to a dedicated PR with regression runs. That PR
+# removes every entry here.
+
+[[ignore]]
+id = "PYSEC-2026-2151"
+reason = "flask 2.3.3 -> 3.1.3 is a major bump; dedicated PR (RC-7). API is bearer-gated and proxied by Django."
+expires = 2026-12-31
+
+[[ignore]]
+id = "PYSEC-2024-271"
+reason = "flask-cors 4.0.0 -> 6.0.0 is a major bump with API changes; dedicated PR (RC-7). CORS is already scoped to one origin and the browser never calls the API."
+expires = 2026-12-31
+
+[[ignore]]
+id = "PYSEC-2024-71"
+reason = "flask-cors 4.0.0 -> 6.0.0; see PYSEC-2024-271."
+expires = 2026-12-31
+
+[[ignore]]
+id = "PYSEC-2026-1383"
+reason = "flask-cors 4.0.0 -> 6.0.0; see PYSEC-2024-271."
+expires = 2026-12-31
+
+[[ignore]]
+id = "PYSEC-2026-1384"
+reason = "flask-cors 4.0.0 -> 6.0.0; see PYSEC-2024-271."
+expires = 2026-12-31
+
+[[ignore]]
+id = "PYSEC-2026-1385"
+reason = "flask-cors 4.0.0 -> 6.0.0; see PYSEC-2024-271."
+expires = 2026-12-31
+
+[[ignore]]
+id = "PYSEC-2024-110"
+reason = "scikit-learn 1.3.0 -> 1.5.0 changes pickled-estimator compatibility for the served joblib artifact; dedicated PR with a retrain (RC-7). The vulnerable path (TfidfVectorizer stop-word leak) is not used."
+expires = 2026-12-31

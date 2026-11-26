@@ -12,6 +12,12 @@ services:
     environment:
       - FLASK_ENV=production
       - PYTHONUNBUFFERED=1
+      # Production mode (SECURITY.md RC-5/RC-6): the API refuses to start on a
+      # dev placeholder, and compose refuses to start without the key. Put
+      # FORECAST_API_KEY (openssl rand -hex 32) in .env next to this file.
+      - APP_ENV=production
+      - FORECAST_API_KEY=${FORECAST_API_KEY:?set FORECAST_API_KEY in .env}
+      - DASHBOARD_ORIGIN=${DASHBOARD_ORIGIN:-http://localhost:8000}
     volumes:
       - ./market_data.db:/app/market_data.db:ro  # Read-only database mount
       - ./logs:/app/logs  # Log directory

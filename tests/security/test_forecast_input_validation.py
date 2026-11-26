@@ -70,5 +70,10 @@ def test_forecast_accepts_ordinary_marginal_cost(client, value):
     # still 503/422 downstream (stale data, missing hour), but never on the
     # finite-check path — so the one thing we assert is: not the finite error.
     resp = client.get(f"/forecast?marginal_cost={value}")
-    body = resp.get_json() or {}
-    assert body.get("error") != "marginal_cost must be a finite number"
+    assert resp.status_code != 422, (value, resp.get_json())
+    assert resp.status_code in (200, 503), (value, resp.status_code)
+    body = resp.get_json()
+    assert isinstance(body, dict)
+    if resp.status_code == 503:
+        assert body["error"] in ("database unavailable", "no market data available") \
+            or "stale" in body["error"]

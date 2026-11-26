@@ -375,7 +375,13 @@ Ordered by how much they'd need fixing before this is more than a demo.
 8. ~~**`docker-compose.yml` cannot build.**~~ **Fixed.** The file was named
    `Dockerfile.txt`; it also copied a moved source path, baked in gitignored
    data and `.env`, and never installed the `curl` its HEALTHCHECK calls.
-   Not yet verified against a live Docker daemon.
+   The image now also ships the packages the API imports (`forecasting_model/`,
+   `common/`) at the repo layout, runs gunicorn as a non-root user, and needs
+   a token for the private toolkit pin at build time:
+   `TOOLKIT_TOKEN=<PAT> docker build --secret id=toolkit_token,env=TOOLKIT_TOKEN -t smart-dispatch-forecast:latest .`
+   Compose runs in production mode and requires `FORECAST_API_KEY` in `.env`
+   (see `.env.example`, `SECURITY.md`). Not yet verified against a live Docker
+   daemon.
 9. ~~**Heavy duplication across phase scripts.**~~ **Fixed.**
    `setup_database_connection()` was copy-pasted into twelve files. It stayed
    duplicated because the packages were named with hyphens and so were not

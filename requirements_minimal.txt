@@ -1,8 +1,9 @@
 Flask==3.0.0
 Flask-CORS==4.0.0
 Flask-Limiter==3.11.0
-# Private repo: CI needs GH_PAT (see requirements.txt); local dev uses
+# Private repo: CI needs TOOLKIT_TOKEN (see requirements.txt); local dev uses
 # `pip install -e ../security-agents`.
+# bump to v0.1.1 once tagged (fail-closed require_secret)
 security-agents[fetch] @ git+https://github.com/victorzhu443/security-agents@v0.1.0
 numpy>=1.24.0
 pandas>=2.0.0
