@@ -77,3 +77,18 @@ def test_forecast_accepts_ordinary_marginal_cost(client, value):
     if resp.status_code == 503:
         assert body["error"] in ("database unavailable", "no market data available") \
             or "stale" in body["error"]
+
+
+# `hours` on /forecast/range goes through the same primitive with a 1..MAX
+# range. Reverting to a bare int() would accept 0 / 999 / 1e999 again.
+@pytest.mark.parametrize("value", ["0", "-1", "999", "nan", "inf", "1e999", "lots", "6.5x"])
+def test_forecast_range_rejects_out_of_range_or_non_finite_hours(client, value):
+    resp = client.get(f"/forecast/range?hours={value}")
+    assert resp.status_code == 422, (value, resp.status_code)
+    assert "hours" in resp.get_json()["error"]
+
+
+@pytest.mark.parametrize("value", ["1", "6", "168"])
+def test_forecast_range_accepts_in_range_hours(client, value):
+    resp = client.get(f"/forecast/range?hours={value}")
+    assert resp.status_code != 422, (value, resp.get_json())

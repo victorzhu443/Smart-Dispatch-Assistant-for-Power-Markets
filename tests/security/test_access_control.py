@@ -151,3 +151,36 @@ def test_probe_routes_are_exempt_from_the_limit():
     limit = int(api.RATE_LIMIT.split()[0])
     statuses = {client.get("/health").status_code for _ in range(limit + 5)}
     assert 429 not in statuses
+
+
+def test_token_check_is_constant_time(api, monkeypatch):
+    # The bearer comparison must go through hmac.compare_digest, not ==: a
+    # plain string compare short-circuits on the first differing byte and
+    # leaks the key's prefix through response timing.
+    import hmac as _hmac
+    calls = []
+    real = _hmac.compare_digest
+
+    def spy(a, b):
+        calls.append((a, b))
+        return real(a, b)
+
+    monkeypatch.setattr(api.hmac, "compare_digest", spy)
+    assert api._token_is_valid(DEV_KEY) is True
+    assert api._token_is_valid("wrong-key") is False
+    assert len(calls) == 2, "token compare bypassed hmac.compare_digest"
+    # Compared as bytes (a str compare raises on non-ASCII, i.e. a 500).
+    assert all(isinstance(a, bytes) and isinstance(b, bytes) for a, b in calls)
+
+
+def test_production_without_api_key_refuses_to_start(monkeypatch):
+    # RC-5: in production a missing FORECAST_API_KEY is a startup failure, never
+    # a silent fall-back to the dev placeholder (which would be an open API with
+    # a public key).
+    from secprim import MissingSecret
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("FORECAST_API_KEY", raising=False)
+    with pytest.raises(MissingSecret, match="FORECAST_API_KEY"):
+        load_api("forecast_api_prod_without_key")
+    monkeypatch.setenv("FORECAST_API_KEY", "k" * 32)
+    assert load_api("forecast_api_prod_with_key").FORECAST_API_KEY == "k" * 32

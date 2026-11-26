@@ -1,0 +1,167 @@
+# Mutation catalogue for the security regression net (security-agents evals/mutate.py).
+#
+# One entry per security fix in this repo. Each `find` -> `replace` reintroduces
+# the exact pre-fix behaviour (a semantic reversion, never a syntax error); the
+# runner applies it in a throwaway worktree and runs the security suite. Every
+# mutation must be KILLED (suite goes red). A survivor is a gap in
+# tests/security/ and is fixed by adding the missing test, never by weakening
+# the mutation. Properties are the root causes in SECURITY.md (P<n> = RC-<n>).
+#
+#   cd ../security-agents && python -m evals.mutate --repo ../smart-dispatch --strict
+#
+# `find` must occur exactly once in `file`.
+
+test: ".venv-sec/bin/python -m pytest tests/security -q -x -p no:cacheprovider"
+
+mutations:
+  # ---- RC-1 boundary validation -------------------------------------------
+  - id: P1-forecast-marginal-cost-plain-float
+    property: P1
+    description: "/forecast parses marginal_cost with float() again, so nan/inf/1e999 reach the margin and emit invalid JSON"
+    file: backend/phase_5_1_forecast_api.py
+    find: |
+      # would propagate NaN into the margin and emit invalid JSON.
+          marginal_cost = finite_float(
+              request.args.get("marginal_cost", DEFAULT_MARGINAL_COST), "marginal_cost")
+    replace: |
+      # would propagate NaN into the margin and emit invalid JSON.
+          marginal_cost = float(request.args.get("marginal_cost", DEFAULT_MARGINAL_COST))
+
+  - id: P1-forecast-range-hours-unbounded
+    property: P1
+    description: "/forecast/range accepts any integer for hours again (no 1..MAX_RANGE_HOURS bound, no finiteness)"
+    file: backend/phase_5_1_forecast_api.py
+    find: |
+      hours = int(finite_float(request.args.get("hours", 24), "hours",
+                                   lo=1, hi=MAX_RANGE_HOURS))
+    replace: |
+      hours = int(request.args.get("hours", 24))
+
+  - id: P1-django-proxy-plain-float
+    property: P1
+    description: "Django proxy validates numeric params with float() again, so nan/inf and out-of-range hours leave the process"
+    file: frontend/dashboard/views.py
+    find: "            finite_float(params[key], key, lo=lo, hi=hi)"
+    replace: "            float(params[key])"
+
+  - id: P1-django-proxy-no-param-whitelist
+    property: P1
+    description: "Django proxy forwards every query parameter upstream instead of the per-route whitelist"
+    file: frontend/dashboard/views.py
+    find: "    params = {key: request.GET[key] for key in keys if request.GET.get(key)}"
+    replace: "    params = {key: value for key, value in request.GET.items() if value}"
+
+  # ---- RC-2 resource bounds -----------------------------------------------
+  - id: P2-zip-budget-skipped
+    property: P2
+    description: "archive members are admitted straight from infolist(): no declared-size, total or ratio check before zf.read"
+    file: data_ingestion/ingest_ercot_history.py
+    find: |
+      members = list(safe_zip_members(zf, max_member_bytes=MAX_MEMBER_BYTES,
+                                          max_total_bytes=MAX_ARCHIVE_BYTES))
+    replace: |
+      members = zf.infolist()
+
+  - id: P2-fetch-body-uncapped
+    property: P2
+    description: "ERCOT listing/download bodies are read with no meaningful byte cap (the caller's cap is ignored)"
+    file: data_ingestion/ingest_ercot_history.py
+    find: "                          max_bytes=max_bytes, timeout=timeout)"
+    replace: "                          max_bytes=10**15, timeout=timeout)"
+
+  # ---- RC-4 pinned, egress-validated fetch --------------------------------
+  - id: P4-fetch-host-allowlist-dropped
+    property: P4
+    description: "ERCOT fetches are no longer pinned to ercot.com: a redirect or DNS answer elsewhere is followed"
+    file: data_ingestion/ingest_ercot_history.py
+    find: "                          allow_hosts=ERCOT_ALLOW_HOSTS,"
+    replace: "                          allow_hosts=None,"
+
+  # ---- RC-5 secrets -------------------------------------------------------
+  - id: P5-django-secret-dev-default-in-prod
+    property: P5
+    description: "SECRET_KEY falls back to the dev placeholder in every environment (no fail-closed require_secret)"
+    file: frontend/smart_ui/settings.py
+    find: 'SECRET_KEY = require_secret("DJANGO_SECRET_KEY", dev_default="dev-only-smart-dispatch")'
+    replace: 'SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-smart-dispatch")'
+
+  - id: P5-django-debug-always-on
+    property: P5
+    description: "DEBUG = True regardless of APP_ENV"
+    file: frontend/smart_ui/settings.py
+    find: |
+      DEBUG = ((os.environ.get("DJANGO_DEBUG") == "1") if "DJANGO_DEBUG" in os.environ
+               else is_dev())
+    replace: |
+      DEBUG = True
+
+  - id: P5-forecast-api-key-dev-default-in-prod
+    property: P5
+    description: "the Flask API's bearer key falls back to the dev placeholder in production instead of refusing to start"
+    file: backend/phase_5_1_forecast_api.py
+    find: |
+      FORECAST_API_KEY = require_secret("FORECAST_API_KEY",
+                                        dev_default="dev-only-forecast-key")
+    replace: |
+      FORECAST_API_KEY = os.environ.get("FORECAST_API_KEY", "dev-only-forecast-key")
+
+  # ---- RC-6 access control ------------------------------------------------
+  - id: P6-auth-gate-protects-nothing
+    property: P6
+    description: "the bearer gate no longer covers /forecast* (the pre-fix open API)"
+    file: backend/phase_5_1_forecast_api.py
+    find: 'PROTECTED_PREFIX = "/forecast"'
+    replace: 'PROTECTED_PREFIX = "/forecast-never-matches"'
+
+  - id: P6-token-compare-not-constant-time
+    property: P6
+    description: "bearer token compared with == instead of hmac.compare_digest (timing side channel)"
+    file: backend/phase_5_1_forecast_api.py
+    find: |
+      return bool(presented) and hmac.compare_digest(
+              presented.encode("utf-8"), FORECAST_API_KEY.encode("utf-8"))
+    replace: |
+      return bool(presented) and presented == FORECAST_API_KEY
+
+  - id: P6-cors-wildcard
+    property: P6
+    description: "CORS(app) wildcard origin again instead of the dashboard origin"
+    file: backend/phase_5_1_forecast_api.py
+    find: "CORS(app, origins=[DASHBOARD_ORIGIN])"
+    replace: "CORS(app)"
+
+  - id: P6-rate-limit-no-default
+    property: P6
+    description: "no rate limit on /forecast* (empty default limits)"
+    file: backend/phase_5_1_forecast_api.py
+    find: "    default_limits=[lambda: RATE_LIMIT],"
+    replace: "    default_limits=[],"
+
+  - id: P6-rate-limit-bucket-per-unverified-token
+    property: P6
+    description: "an unverified token gets its own rate-limit bucket, so rotating wrong tokens escapes the per-address limit"
+    file: backend/phase_5_1_forecast_api.py
+    find: |
+      presented = _presented_token()
+          if _token_is_valid(presented):
+              return "token:" + presented
+    replace: |
+      presented = _presented_token()
+          if presented:
+              return "token:" + presented
+
+  # ---- RC-8 LLM01 ---------------------------------------------------------
+  - id: P8-harden-untrusted-passthrough
+    property: P8
+    description: "harden_untrusted returns the retrieved text unchanged (no fence, no neutralisation)"
+    file: smart_dispatch_security.py
+    find: '    return _harden(text or "")'
+    replace: '    return text or ""'
+
+  # ---- RC-9 hardening defaults --------------------------------------------
+  - id: P9-k8s-privilege-escalation-allowed
+    property: P9
+    description: "the forecast deployment's container allows privilege escalation again"
+    file: k8s-forecast-deployment.yaml
+    find: "          allowPrivilegeEscalation: false"
+    replace: "          allowPrivilegeEscalation: true"
