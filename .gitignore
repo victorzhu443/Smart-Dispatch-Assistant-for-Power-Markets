@@ -25,3 +25,7 @@ staticfiles/
 
 # OS
 .DS_Store
+
+# security tooling (local only)
+.venv-sec/
+.hypothesis/

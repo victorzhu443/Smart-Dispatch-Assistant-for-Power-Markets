@@ -3,8 +3,11 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = "dev-only-smart-dispatch"
-DEBUG = True
+# Overridable via the environment so a real deployment never ships the dev
+# literal. The current dev value stays the default, so `runserver` behaves
+# exactly as before unless DJANGO_SECRET_KEY / DJANGO_DEBUG are set.
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-smart-dispatch")
+DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
 # "testserver" is the host Django's own test client sends; without it
 # every request in a test returns 400 before reaching a view.
 ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver"]
