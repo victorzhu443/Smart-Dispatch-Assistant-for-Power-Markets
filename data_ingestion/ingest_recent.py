@@ -30,13 +30,15 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import re
 import sys
 import zipfile
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pandas as pd
-import requests
+from secprim import MalformedInput
 
 # Sibling module: data-ingestion/ is on sys.path when this runs as a script.
 from data_ingestion import ingest_ercot_history as base
@@ -73,14 +75,12 @@ class RecentIngestError(RuntimeError):
 
 def list_recent_files() -> list[dict]:
     """Every CSV interval file ERCOT currently offers, newest first."""
-    response = requests.get(
-        base.MIS_LIST_URL,
-        params={"reportTypeId": RECENT_REPORT_TYPE_ID},
-        timeout=60,
-    )
-    response.raise_for_status()
+    # Pinned to ercot.com and byte-capped, like every fetch in the base module
+    # (SECURITY.md RC-4).
+    response = base._fetch(base.MIS_LIST_URL, {"reportTypeId": RECENT_REPORT_TYPE_ID},
+                           timeout=60, max_bytes=base.MAX_LISTING_BYTES)
 
-    documents = response.json()["ListDocsByRptTypeRes"]["DocumentList"]
+    documents = json.loads(response.content)["ListDocsByRptTypeRes"]["DocumentList"]
     files = []
     for entry in documents:
         doc = entry["Document"]
@@ -137,18 +137,18 @@ def select_new_files(files: list[dict], since: pd.Timestamp | None,
 
 def download_and_parse(doc_id: int, hubs: list[str]) -> pd.DataFrame:
     """One interval file, filtered to the hubs of interest."""
-    response = requests.get(
-        base.MIS_DOWNLOAD_URL, params={"doclookupId": doc_id}, timeout=120
-    )
-    response.raise_for_status()
+    response = base._fetch(base.MIS_DOWNLOAD_URL, {"doclookupId": doc_id},
+                           timeout=120, max_bytes=base.MAX_DOWNLOAD_BYTES)
 
     if not response.content.startswith(b"PK"):
         raise RecentIngestError(
             f"doc {doc_id}: expected a zip, got {response.content[:16]!r}"
         )
 
+    # The member is admitted only after its declared size/ratio/name pass the
+    # archive budget; nothing is decompressed before that (RC-2).
     archive = zipfile.ZipFile(io.BytesIO(response.content))
-    frame = pd.read_csv(io.BytesIO(archive.read(archive.namelist()[0])))
+    frame = pd.read_csv(io.BytesIO(archive.read(base._first_member(archive))))
     frame = frame[frame["SettlementPointName"].isin(hubs)]
 
     # The interval files use compact column names and a DSTFlag where the
@@ -171,16 +171,12 @@ def ingest_day_ahead(engine, hubs: list[str], days: int) -> int:
     Each file covers one delivery day, so `days` files bridge `days` days.
     Returns the number of hourly rows written.
     """
-    response = requests.get(
-        base.MIS_LIST_URL,
-        params={"reportTypeId": RECENT_DAM_REPORT_TYPE_ID},
-        timeout=60,
-    )
-    response.raise_for_status()
+    response = base._fetch(base.MIS_LIST_URL, {"reportTypeId": RECENT_DAM_REPORT_TYPE_ID},
+                           timeout=60, max_bytes=base.MAX_LISTING_BYTES)
 
     documents = [
         entry["Document"]
-        for entry in response.json()["ListDocsByRptTypeRes"]["DocumentList"]
+        for entry in json.loads(response.content)["ListDocsByRptTypeRes"]["DocumentList"]
         if entry["Document"].get("FriendlyName", "").endswith("_csv")
     ]
     if not documents:
@@ -195,14 +191,10 @@ def ingest_day_ahead(engine, hubs: list[str], days: int) -> int:
     frames = []
     for doc in wanted:
         try:
-            raw = requests.get(
-                base.MIS_DOWNLOAD_URL,
-                params={"doclookupId": int(doc["DocID"])},
-                timeout=120,
-            )
-            raw.raise_for_status()
+            raw = base._fetch(base.MIS_DOWNLOAD_URL, {"doclookupId": int(doc["DocID"])},
+                              timeout=120, max_bytes=base.MAX_DOWNLOAD_BYTES)
             archive = zipfile.ZipFile(io.BytesIO(raw.content))
-            frame = pd.read_csv(io.BytesIO(archive.read(archive.namelist()[0])))
+            frame = pd.read_csv(io.BytesIO(archive.read(base._first_member(archive))))
             frame = frame[frame["SettlementPoint"].isin(hubs)]
             if not frame.empty:
                 frames.append(frame.rename(columns={
@@ -317,6 +309,8 @@ if __name__ == "__main__":
     except (RecentIngestError, base.IngestionError) as exc:
         print(f"\nIncremental ingestion failed: {exc}", file=sys.stderr)
         sys.exit(1)
-    except requests.RequestException as exc:
-        print(f"\nERCOT unreachable: {exc}", file=sys.stderr)
+    except (httpx.HTTPError, OSError, MalformedInput) as exc:
+        # Transport failure, or the pinned fetch / archive budget refused the
+        # response (secprim raises MalformedInput subclasses for both).
+        print(f"\nERCOT unreachable or refused: {exc}", file=sys.stderr)
         sys.exit(1)

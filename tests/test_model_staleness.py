@@ -84,7 +84,8 @@ class TestStaleModelIsFlagged:
         api = _age_the_model(_load_api(), days=244)  # the lag actually hit
 
         body = api.app.test_client().get(
-            "/forecast?timestamp=2026-08-15T18:00:00Z"
+            "/forecast?timestamp=2026-08-15T18:00:00Z",
+            headers={"Authorization": f"Bearer {api.FORECAST_API_KEY}"},
         ).get_json()
         p = body["provenance"]
 
@@ -97,7 +98,8 @@ class TestStaleModelIsFlagged:
         api = _age_the_model(_load_api(), days=244)
 
         body = api.app.test_client().get(
-            "/forecast?timestamp=2026-08-15T18:00:00Z"
+            "/forecast?timestamp=2026-08-15T18:00:00Z",
+            headers={"Authorization": f"Bearer {api.FORECAST_API_KEY}"},
         ).get_json()
 
         assert "forecasting_model.train_model" in body["provenance"]["fallback_reason"]
@@ -108,7 +110,8 @@ class TestStaleModelIsFlagged:
         api = _age_the_model(_load_api(), days=244)
 
         response = api.app.test_client().get(
-            "/forecast?timestamp=2026-08-15T18:00:00Z"
+            "/forecast?timestamp=2026-08-15T18:00:00Z",
+            headers={"Authorization": f"Bearer {api.FORECAST_API_KEY}"},
         )
 
         assert response.status_code == 200
@@ -120,7 +123,8 @@ class TestStaleModelIsFlagged:
         api = _load_api()
 
         body = api.app.test_client().get(
-            "/forecast?timestamp=2026-08-15T18:00:00Z"
+            "/forecast?timestamp=2026-08-15T18:00:00Z",
+            headers={"Authorization": f"Bearer {api.FORECAST_API_KEY}"},
         ).get_json()
 
         assert body["provenance"]["model_stale"] is False
@@ -131,7 +135,8 @@ class TestStaleModelIsFlagged:
         api = _age_the_model(_load_api(), days=int(api_max() - 1))
 
         body = api.app.test_client().get(
-            "/forecast?timestamp=2026-08-15T18:00:00Z"
+            "/forecast?timestamp=2026-08-15T18:00:00Z",
+            headers={"Authorization": f"Bearer {api.FORECAST_API_KEY}"},
         ).get_json()
 
         assert body["provenance"]["model_stale"] is False
@@ -171,7 +176,8 @@ class TestRangeEndpointCarriesTheSameFlag:
         api = _age_the_model(_load_api(), days=244)
 
         body = api.app.test_client().get(
-            "/forecast/range?start=2026-08-15T00:00:00Z&hours=6"
+            "/forecast/range?start=2026-08-15T00:00:00Z&hours=6",
+            headers={"Authorization": f"Bearer {api.FORECAST_API_KEY}"},
         ).get_json()
 
         assert body["provenance"]["model_stale"] is True

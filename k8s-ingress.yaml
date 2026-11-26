@@ -1,18 +1,37 @@
-apiVersion: networking.k8s.io/v1 
-kind: Ingress 
-metadata: 
-  name: smart-dispatch-ingress 
-  namespace: smart-dispatch 
-spec: 
-  ingressClassName: nginx 
-  rules: 
-  - host: localhost 
-    http: 
-      paths: 
-      - path: /forecast 
-        pathType: Prefix 
-        backend: 
-          service: 
-            name: forecast-service 
-            port: 
-              number: 80 
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: smart-dispatch-ingress
+  namespace: smart-dispatch
+  # Edge throttles and ceilings (SECURITY.md RC-6). These are ingress-nginx
+  # annotations, matching `ingressClassName: nginx` below; translate them if
+  # the cluster runs a different class.
+  #
+  # Authentication is NOT done here: the application's bearer-token gate on
+  # /forecast* consumes the Authorization header, and an ingress basic-auth
+  # gate would consume the same header and make the API unreachable. If an
+  # edge authn layer is wanted later, use `auth-url` (an external auth
+  # service), which does not share that header.
+  annotations:
+    # Per-client throttle; the application's own limit (60/min per key or
+    # address) still applies behind it.
+    nginx.ingress.kubernetes.io/limit-rps: "5"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+    # Request-size and timeout ceilings for a read-only GET API.
+    nginx.ingress.kubernetes.io/proxy-body-size: "16k"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: localhost
+    http:
+      paths:
+      - path: /forecast
+        pathType: Prefix
+        backend:
+          service:
+            name: forecast-service
+            port:
+              number: 80

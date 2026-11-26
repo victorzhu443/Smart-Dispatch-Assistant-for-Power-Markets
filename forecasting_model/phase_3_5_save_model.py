@@ -304,8 +304,12 @@ def save_model_to_file(model, scaler, feature_cols, training_history, filename="
         
         if file_exists:
             try:
-                # Try to reload the model (PyTorch 2.7+ compatibility)
-                loaded_state = torch.load(filename, map_location='cpu', weights_only=False)
+                # Reload the artifact this same run just wrote. weights_only=True
+                # cannot be used here: the checkpoint deliberately carries the
+                # fitted sklearn `scaler` (a pickled object, not a tensor), and
+                # the training history. The file is self-produced and local; it
+                # is never fetched or user-supplied (SECURITY.md RC-9).
+                loaded_state = torch.load(filename, map_location='cpu', weights_only=False)  # nosemgrep: torch-load-unsafe  # nosec B614
                 
                 # Verify essential components
                 has_model_state = 'model_state_dict' in loaded_state

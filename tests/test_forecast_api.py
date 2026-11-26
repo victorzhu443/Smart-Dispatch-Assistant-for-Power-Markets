@@ -36,7 +36,11 @@ def api():
 
 @pytest.fixture
 def client(api):
-    return api.app.test_client()
+    # /forecast* requires the bearer token the Django proxy sends; the test
+    # client presents the dev default the same way (SECURITY.md RC-6).
+    c = api.app.test_client()
+    c.environ_base["HTTP_AUTHORIZATION"] = f"Bearer {api.FORECAST_API_KEY}"
+    return c
 
 
 requires_artifact = pytest.mark.skipif(
@@ -170,7 +174,8 @@ class TestFallbackLadder:
         api.service.load_error = "artifact not found (injected)"
 
         response = api.app.test_client().get(
-            "/forecast?timestamp=2025-12-15T18:00:00Z"
+            "/forecast?timestamp=2025-12-15T18:00:00Z",
+            headers={"Authorization": f"Bearer {api.FORECAST_API_KEY}"},
         )
 
         assert response.status_code == 200, "should degrade, not fail outright"
@@ -190,7 +195,8 @@ class TestFallbackLadder:
         api.service.load_error = "injected"
 
         body = api.app.test_client().get(
-            "/forecast?timestamp=2025-12-15T18:00:00Z"
+            "/forecast?timestamp=2025-12-15T18:00:00Z",
+            headers={"Authorization": f"Bearer {api.FORECAST_API_KEY}"},
         ).get_json()
 
         assert body["provenance"]["model"] != "quantile_gbm"

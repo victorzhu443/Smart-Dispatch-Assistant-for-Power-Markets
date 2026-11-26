@@ -1,13 +1,22 @@
 import os
 from pathlib import Path
 
+from secprim import is_dev, require_secret
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Overridable via the environment so a real deployment never ships the dev
-# literal. The current dev value stays the default, so `runserver` behaves
-# exactly as before unless DJANGO_SECRET_KEY / DJANGO_DEBUG are set.
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-smart-dispatch")
-DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
+# Secrets come from the environment (SECURITY.md RC-5). With APP_ENV unset,
+# "dev" or "test", the placeholder below is used so `runserver` behaves exactly
+# as before with zero configuration. With APP_ENV=production a missing
+# DJANGO_SECRET_KEY raises secprim.MissingSecret at import, so a deployment can
+# never boot on the dev key by accident.
+SECRET_KEY = require_secret("DJANGO_SECRET_KEY", dev_default="dev-only-smart-dispatch")
+
+# DEBUG follows the environment: on only for an explicit dev/test label (or
+# none), off for production AND for anything unrecognised such as "staging",
+# unless DJANGO_DEBUG=1/0 says otherwise explicitly.
+DEBUG = ((os.environ.get("DJANGO_DEBUG") == "1") if "DJANGO_DEBUG" in os.environ
+         else is_dev())
 # "testserver" is the host Django's own test client sends; without it
 # every request in a test returns 400 before reaching a view.
 ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver"]
@@ -74,3 +83,9 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 FORECAST_API_URL = os.getenv("FORECAST_API_URL", "http://127.0.0.1:5001/forecast")
 FORECAST_RANGE_URL = os.getenv("FORECAST_RANGE_URL",
                                "http://127.0.0.1:5001/forecast/range")
+
+# The forecast API requires a bearer token on /forecast* (RC-6). Django is its
+# only client and holds the key; the browser only ever talks to Django. The dev
+# default matches the API's own, so the local flow needs no configuration.
+FORECAST_API_KEY = require_secret("FORECAST_API_KEY",
+                                  dev_default="dev-only-forecast-key")

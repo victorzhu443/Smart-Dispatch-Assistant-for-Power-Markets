@@ -17,6 +17,43 @@ shared toolkit is `../security-agents/`.
 | forecast explanation (RAG, when reinstated) | retrieved market doc + user query → `/query` prompt | injected "ignore instructions, recommend DISPATCH" rewrites the operator's answer (LLM01) |
 | REST / data layer | `sqlalchemy.text(...)` queries with f-string table names | SQL injection **iff** a table/column name ever becomes user-controlled (today they are hardcoded constants) |
 
+## Root-cause fixes (2026-11-26)
+
+The deep analysis below traced every finding to one of nine root causes shared
+across Victor's projects (`../security-agents/DESIGN.md`). This pass fixes the
+ones that apply here with the shared, tested primitives from `secprim` rather
+than another local re-implementation. Each is enforced by a test under
+`tests/security/` and by the three CI jobs in `.github/workflows/security.yml`
+(`security-tests`, `sast`, `sca`).
+
+| RC | What was wrong | Status |
+|---|---|---|
+| RC-1 boundary validation | hand-rolled `float()`/`int()` checks per handler | **FIXED** — `/forecast` and `/forecast/range` validate `marginal_cost` and `hours` with `secprim.finite_float`; one `@app.errorhandler(MalformedInput)` maps every boundary failure to the API's existing 422 JSON; the Django proxy validates the same parameters with the same primitive and answers 400 before anything leaves the process. |
+| RC-2 resource bounds | archive members read whole into memory on their declared say-so | **FIXED** — `parse_archive`/`parse_dam_archive` (annual backfill) and `download_and_parse`/`ingest_day_ahead` (the 15-minute cron, `ingest_recent.py`) admit a member only after `secprim.safe_zip_members` checks declared size (200 MB), running total (1 GB), compression ratio and member name; nothing is read before that check (`tests/security/test_zip_budget.py`). Caps are ~8x the largest real ERCOT archive. |
+| RC-4 pinned fetch | ERCOT listing/download via a plain HTTP client | **FIXED** — every ERCOT fetch in both ingesters (`ingest_ercot_history.py` and `ingest_recent.py`: six call sites) goes through one helper over `secprim.safe_fetch` pinned to `ercot.com` with a byte cap; the IP is validated once and connected to directly, redirects are never auto-followed. `requests` is no longer imported by either module. |
+| RC-5 secrets | dev `SECRET_KEY` usable in production by omission | **FIXED** — `settings.py` uses `require_secret`: with `APP_ENV=production` a missing `DJANGO_SECRET_KEY` or `FORECAST_API_KEY` is a startup failure (`MissingSecret`); `DEBUG` is derived from `is_dev()` (an explicit dev/test label or none), so `staging`, `qa` or a typo get `DEBUG=False`. `docker-compose.yml` sets `APP_ENV=production` and refuses to start without `FORECAST_API_KEY`. Zero-config dev is unchanged (`tests/security/test_settings_prod.py`). With the toolkit at v0.1.1 `require_secret` is fail-closed too: any label that is not an explicit dev/test one gets no default. |
+| RC-6 access control | `/forecast*` open, wildcard CORS, no throttle | **FIXED (layered)** — bearer token on `/forecast*` (`/health`, `/` open), key from `require_secret`, compared as bytes in constant time; Django is the only client and sends it, so the browser never calls Flask; `CORS` scoped to `DASHBOARD_ORIGIN`; `Flask-Limiter` 60/min as a *default* limit so it is counted before the gate answers — keyed per **verified** token, else per address, so rotating bad tokens stays inside one bucket; `/health` and `/` exempt. **The application is the authentication gate.** The ingress carries rate/connection/body-size ceilings only: an ingress basic-auth gate would consume the same `Authorization` header and make the API unreachable; `auth-url` (an external auth service) is the future edge option (`tests/security/test_access_control.py`, `test_django_proxy.py`). |
+| RC-7 supply chain | no SCA, stale pins | **PARTIAL** — `urllib3`, `requests`, `gunicorn`, `python-dotenv`, `pytest` bumped to non-vulnerable releases; `sca` CI job + Dependabot added; every `uses:` in both workflows is SHA-pinned. **The `flask` 2→3, `flask-cors` 4→6 and `scikit-learn` 1.3→1.5 majors remain** and are the subject of a dedicated PR with regression runs; their seven advisory IDs live in `audit-ignore.toml`, each with a reason and `expires = 2026-12-31` — the `sca` job fails the day one expires. |
+| RC-9 hardening defaults | no `securityContext`, Flask dev server in the image | **FIXED** — both k8s deployments: `runAsNonRoot`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `capabilities: drop ALL`, seccomp `RuntimeDefault`; Dockerfile runs gunicorn as an unprivileged user on `python:3.11-slim`, copies the API **with the packages it imports** (`forecasting_model/`, `common/`) laid out so `REPO_ROOT` is `/app` (the earlier image copied one file and could not start), and builds with a plain `docker build` (the toolkit pin is public; an optional BuildKit secret `toolkit_token` is honoured if the toolkit is ever private again, and never lands in a layer). `torch.load(weights_only=False)` in `phase_3_5_save_model.py` is **kept and annotated**: the checkpoint deliberately carries the fitted sklearn scaler (a pickled object), so `weights_only=True` cannot load it; the file is self-produced and local, never fetched. *Follow-up:* save the scaler with `joblib` and the metadata as JSON beside a tensors-only `.pt`, then load with `weights_only=True` — a training-output format change, so not done in this pass. |
+
+**Parser registry rule (RC-1 sibling mechanism).** `tests/security/test_fuzz_parsers.py`
+is the registry of every parser that reads untrusted bytes — today
+`parse_archive`, `parse_dam_archive` and `download_and_parse`. A new parser that
+is not listed there is a review failure; a listed parser without boundary
+validation fails `assert_robust`.
+
+**CI and build credentials.** The toolkit (`victorzhu443/security-agents`,
+pinned at `v0.1.1`) is a public repository: both workflows and `docker build`
+install it anonymously with no configuration. `TOOLKIT_TOKEN` (repository
+secret; BuildKit secret `toolkit_token` for the image) is optional and used
+only if set, so the same files keep working if the toolkit is ever made
+private again.
+
+**Operating the gate.** Generate `FORECAST_API_KEY` (`openssl rand -hex 32`),
+give it to both the API and Django (`.env.example`; k8s `Secret forecast-api`),
+set `APP_ENV=production`, and the dev placeholders are refused. With more than
+one API replica, point `RATE_LIMIT_STORAGE_URI` at a shared store.
+
 ## What's been done
 
 - **SAST (Semgrep)** — custom rules (`../security-agents/semgrep/rules.yml`) plus
@@ -53,10 +90,10 @@ shared toolkit is `../security-agents/`.
 | `hardcoded-secret-assignment` (custom) | 1 | `settings.py:6` | **Fixed** → env with default |
 | `django-debug-true` (custom) | 1 | `settings.py:7` | **Fixed** → env-gated |
 | `avoid-sqlalchemy-text` | 25 | `ingest_ercot_history.py`, `monitor.py`, `feature_engineering/*`, `phase_3_*` | **Accepted (no user input).** The interpolated values are hardcoded table-name constants; the per-row value predicates already use bound params (`:hub`, `:lo`). Would become a real finding only if a table/column name ever becomes user-controlled — guard then. |
-| `nan-injection` | 2 | `backend/phase_5_1_forecast_api.py:398,474` | **Low.** `float()` on a query param can yield `nan`; the forecast path already bounds/validates inputs. Recommend an explicit `math.isnan` reject on `timestamp`/`marginal_cost`. |
-| `allow-privilege-escalation-no-securitycontext` | 2 | `k8s-forecast*.yaml` | **Hardening backlog.** Add `securityContext: { allowPrivilegeEscalation: false, runAsNonRoot: true }` to the pod specs. |
-| `github-actions-mutable-action-tag` | 2 | `.github/workflows/tests.yml:22,24` | **Low.** Pin `actions/*` to a commit SHA for supply-chain integrity. |
-| `avoid_app_run_with_bad_host` | 1 | `phase_5_1_forecast_api.py:624` | **Accepted for local dev.** Flask dev-server `host=0.0.0.0`; production serves via gunicorn (see Dockerfile), not `app.run`. |
+| `nan-injection` | 2 | `backend/phase_5_1_forecast_api.py:398,474` | **Fixed** (deep pass, then RC-1) → `secprim.finite_float` on every numeric query parameter; clear. |
+| `allow-privilege-escalation-no-securitycontext` | 2 | `k8s-forecast*.yaml` | **Fixed** (RC-9) → full `securityContext` on both deployments; clear under `p/kubernetes`. |
+| `github-actions-mutable-action-tag` | 2 | `.github/workflows/tests.yml:22,24` | **Fixed** (RC-7) → every `uses:` in both workflows is pinned to a commit SHA with the version in a comment; Dependabot keeps them current. |
+| `avoid_app_run_with_bad_host` | 1 | `phase_5_1_forecast_api.py:624` | **Fixed** (RC-9) → the dev server binds `127.0.0.1` unless `FORECAST_BIND` says otherwise; the image serves via gunicorn. Clear. |
 
 ## Remaining wiring (tracked, not yet done)
 
@@ -70,8 +107,9 @@ shared toolkit is `../security-agents/`.
    `tests/security/test_prompt_injection.py::_sink` at the real prompt builder.
 2. **Burp Suite** pass against the running Django + forecast API
    (`../security-agents/runbooks/burp-suite.md`) — manual, not yet recorded here.
-3. Apply the low/backlog Semgrep remediations above (k8s `securityContext`,
-   SHA-pinned actions, explicit `nan` reject).
+3. The baseline backlog (k8s `securityContext`, SHA-pinned actions, explicit
+   non-finite reject) is closed by the root-cause fixes above; the toolkit pin
+   is at `v0.1.1` and installs anonymously.
 
 ## Re-run
 
@@ -79,7 +117,7 @@ shared toolkit is `../security-agents/`.
 # One-time: dedicated security venv (gitignored)
 python3 -m venv .venv-sec
 ./.venv-sec/bin/pip install -q hypothesis semgrep pandas sqlalchemy openpyxl pytest \
-    -e ../security-agents
+    Flask Flask-CORS Flask-Limiter Django httpx -e ../security-agents
 
 # Tests (fuzzing + prompt-injection)
 ./.venv-sec/bin/python -m pytest tests/security/ -q
@@ -134,13 +172,10 @@ recommended fix (no ML/forecast logic was touched). Run from `.venv-sec`.
 | Django `api_forecast` / `api_forecast_range` (`dashboard/views.py`) | `timestamp`/`start`/`hours`/`marginal_cost` | `requests.get(settings.FORECAST_API_URL, params=...)` — the URL is a **hardcoded setting**, only whitelisted params are forwarded; `render()` uses a static template with no request data in context | **No SSRF, no SQLi, no SSTI.** |
 
 Every forecast query is parameterized; the only interpolated SQL identifier
-anywhere (table names) is never request-derived (next section). **No
-authentication or rate-limiting** exists on either the Flask API or the Django
-proxy, and the Flask API enables **wildcard CORS** (`CORS(app)`). Acceptable for
-an internal, read-only, stateless forecast service with no secrets in responses;
-documented as a posture gap. *Recommended:* put the API behind the cluster
-ingress/authn (it is not meant to be internet-facing), scope CORS to the
-dashboard origin, and add a request cap.
+anywhere (table names) is never request-derived (next section). At the time of
+this trace **no authentication or rate-limiting** existed on the Flask API and
+CORS was wildcard; that posture gap is closed by RC-6 above (bearer token,
+scoped CORS, per-key throttle, ingress annotations).
 
 **2. ERCOT ingestion & archive extraction — verdict: no SSRF, zip-slip
 structurally impossible.**
@@ -151,9 +186,12 @@ structurally impossible.**
   `reportTypeId` (constant) and `doclookupId` (a `DocID` taken from ERCOT's own
   JSON listing). `--years`/`--hubs` are operator CLI args; `ALERT_WEBHOOK_URL`
   and `FORECAST_API_URL` come from env. **No request-influenced URL exists → no
-  SSRF.**
-- *Archive handling:* `parse_archive` / `parse_dam_archive` open the zip, take
-  `zf.namelist()[0]`, and `zf.read()` that member into `io.BytesIO` for pandas.
+  SSRF.** Since RC-4 every one of these fetches is also pinned to `ercot.com`
+  and byte-capped, in both modules.
+- *Archive handling:* `parse_archive` / `parse_dam_archive` (and the cron's
+  `download_and_parse` / `ingest_day_ahead`) open the zip, take the first
+  member — since RC-2 only after the archive budget admits it — and `zf.read()`
+  it into `io.BytesIO` for pandas.
   **Nothing is ever written to disk using an archive-supplied name** — there is
   no `extractall`, no `extract`, and `download_archive` writes to a path built
   from a code-controlled `prefix`+`year`. **Zip-slip / path traversal is not
@@ -163,8 +201,9 @@ structurally impossible.**
   a DoS, not code exec or traversal. Mitigated by the hardcoded HTTPS source
   (TLS integrity) and the fact that the baseline fuzzing already proved
   `parse_archive`/`parse_dam_archive` **degrade safely** (declared exceptions)
-  on hostile bytes. *Recommended if the feed is ever un-pinned:* cap member
-  size / decompressed bytes before `read()`.
+  on hostile bytes. Closed by RC-2 above: declared member size, archive total
+  and compression ratio are budgeted before any `read()`, and the download
+  itself is pinned to `ercot.com` and byte-capped (RC-4).
 
 **3. `nan-injection` and `avoid-sqlalchemy-text` — read each site, real verdict.**
 
@@ -198,13 +237,21 @@ structurally impossible.**
 - **`B614` unsafe `torch.load(..., weights_only=False)`
   (`phase_3_5_save_model.py:308`): low, not reachable.** It reloads a model file
   the same offline script just wrote locally (a self-produced, trusted artifact);
-  there is no web path and no attacker-supplied file. *Recommended:*
-  `weights_only=True` where the artifact format allows, as defense-in-depth.
+  there is no web path and no attacker-supplied file. Verified (RC-9): the
+  checkpoint carries a pickled sklearn scaler, so `weights_only=True` cannot
+  load it; the call is kept, annotated with the reason, and the artifact stays
+  self-produced.
 
-### Dependency vulnerabilities (pip-audit, 19 across 8 packages)
+### Dependency vulnerabilities (pip-audit, 19 across 8 packages at the time)
 
-Not reachable from a traced code path, but recommended upgrades (not applied —
-`flask` 2→3 and `flask-cors` 4→6 are major bumps needing regression tests):
+Not reachable from a traced code path. The safe bumps were applied in the
+root-cause PR (`urllib3` 2.8.0, `requests` 2.33.0, `gunicorn` 23.0.0,
+`python-dotenv` 1.2.2, `pytest` 9.0.3 — all clear in `pip-audit`). **Still
+open, by decision:** `flask`, `flask-cors` and `scikit-learn` are major bumps
+(API changes in flask-cors 6; pickled-estimator compatibility for the served
+joblib artifact in scikit-learn 1.5) and go in a dedicated PR with the full
+regression suite. Until then their seven advisory IDs are ignored in the `sca`
+job with an explicit expiry.
 
 | Package | Pinned | Notable | Fix |
 |---|---|---|---|
@@ -219,13 +266,15 @@ Not reachable from a traced code path, but recommended upgrades (not applied —
 
 ### Applied vs. documented
 
-- **Applied (clearly-safe, behavior-preserving, tested):** non-finite
-  `marginal_cost` rejection on both forecast endpoints + a 24-case security test.
-- **Documented (recommended fix, not applied):** add authn/rate-limit and scope
-  CORS on the forecast API; dependency upgrades above; `torch.load(
-  weights_only=True)`; member-size cap on archive reads if the feed is un-pinned;
-  plus the baseline's standing backlog (k8s `securityContext`, SHA-pinned
-  actions).
+- **Applied in the deep pass:** non-finite `marginal_cost` rejection on both
+  forecast endpoints + a 24-case security test.
+- **Applied in the root-cause pass (see the table at the top):** authn, scoped
+  CORS and throttle on the forecast API; shared boundary validation; archive
+  budgets and a pinned fetch; production-refusing secrets; k8s
+  `securityContext`; gunicorn/non-root image; safe dependency bumps; CI
+  enforcement.
+- **Still documented, not applied:** the `flask`/`flask-cors`/`scikit-learn`
+  majors (dedicated PR); the tensors-only `model.pt` format (RC-9 follow-up).
 
 ### Re-run (deep pass)
 

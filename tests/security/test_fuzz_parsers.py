@@ -11,6 +11,13 @@ partial result. See ../../../security-agents/fuzzing/ for the method.
 
 We fuzz by writing the fuzzed bytes to a temp file and passing its Path, which is
 exactly the shape `download_archive` hands these parsers in production.
+
+`download_and_parse` in `data_ingestion/ingest_recent.py` (the 15-minute cron)
+is the third parser over the same feed; it is fuzzed by stubbing the pinned fetch
+so the hostile bytes arrive as the response body, exactly as in production.
+
+This file is the REGISTRY of parsers that read untrusted bytes (SECURITY.md
+RC-1): a parser not listed here is a review failure.
 """
 import os
 import tempfile
@@ -21,6 +28,8 @@ import pandas as pd
 
 from fuzzing.fuzz_lib import assert_robust
 
+from data_ingestion import ingest_ercot_history as base
+from data_ingestion import ingest_recent
 from data_ingestion.ingest_ercot_history import (
     IngestionError,
     parse_archive,
@@ -35,6 +44,8 @@ from data_ingestion.ingest_ercot_history import (
 #   OSError         filesystem / decompression I/O failure
 #   IngestionError  the module's own "no trustworthy rows" rejection
 #   pandas ParserError / EmptyDataError  malformed tabular content
+#   RecentIngestError  ingest_recent's own "not a zip / no rows" rejection
+#   (secprim's MalformedInput/TooLarge are ValueError subclasses: covered)
 ALLOWED = (
     zipfile.BadZipFile,
     IndexError,
@@ -42,6 +53,7 @@ ALLOWED = (
     KeyError,
     OSError,
     IngestionError,
+    ingest_recent.RecentIngestError,
     pd.errors.ParserError,
     pd.errors.EmptyDataError,
 )
@@ -78,3 +90,23 @@ def test_parse_dam_archive_degrades_safely_on_hostile_bytes():
     # Day-ahead archive parser: a differently-shaped workbook, same guarantee.
     assert_robust(_fuzz_archive_bytes(parse_dam_archive), allowed=ALLOWED,
                   max_examples=200)()
+
+
+class _Body:
+    def __init__(self, content: bytes):
+        self.content = content
+        self.status_code = 200
+
+
+def test_download_and_parse_degrades_safely_on_hostile_bytes(monkeypatch):
+    # The incremental (cron) parser: the fetched body is the untrusted input.
+    # Stub the pinned fetch so each fuzz case arrives as that body.
+    holder = {}
+    monkeypatch.setattr(base, "_fetch", lambda *a, **k: _Body(holder["raw"]))
+
+    def run(data: str):
+        holder["raw"] = data.encode("latin-1", "replace")
+        return ingest_recent.download_and_parse(doc_id=1, hubs=HUBS)
+
+    run.__name__ = "download_and_parse"
+    assert_robust(run, allowed=ALLOWED, max_examples=200)()
