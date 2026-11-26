@@ -1,5 +1,5 @@
 Flask==3.0.0
-Flask-CORS==4.0.0
+Flask-CORS==6.0.5
 Flask-Limiter==3.11.0
 # Public repo: installs anonymously (token optional, see requirements.txt);
 # local dev uses `pip install -e ../security-agents`.
