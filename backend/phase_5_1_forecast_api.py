@@ -32,6 +32,7 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -402,6 +403,13 @@ def forecast_endpoint():
             "error": "marginal_cost must be a number",
             "received": request.args.get("marginal_cost"),
         }), 422
+    # float() accepts "nan"/"inf"; a non-finite marginal_cost would otherwise
+    # propagate NaN into the recommendation margin and emit invalid (NaN) JSON.
+    if not math.isfinite(marginal_cost):
+        return jsonify({
+            "error": "marginal_cost must be a finite number",
+            "received": request.args.get("marginal_cost"),
+        }), 422
 
     latest = service.latest_data_time()
     if latest is None:
@@ -476,6 +484,14 @@ def forecast_range_endpoint():
     except ValueError:
         return jsonify({
             "error": "hours and marginal_cost must be numbers",
+        }), 422
+
+    # float() accepts "nan"/"inf"; reject a non-finite marginal_cost before it
+    # reaches the recommendation (NaN margin / invalid JSON).
+    if not math.isfinite(marginal_cost):
+        return jsonify({
+            "error": "marginal_cost must be a finite number",
+            "received": request.args.get("marginal_cost"),
         }), 422
 
     if not 1 <= hours <= MAX_RANGE_HOURS:
