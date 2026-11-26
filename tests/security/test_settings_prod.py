@@ -77,19 +77,14 @@ def test_explicit_debug_override_wins():
 
 @pytest.mark.parametrize("app_env", ["staging", "qa", "prodution", "live"])
 def test_unrecognised_label_is_not_dev(app_env):
-    """An unrecognised APP_ENV must never inherit development behaviour."""
-    import importlib
+    """An unrecognised APP_ENV must never inherit development behaviour:
+    secrets fail closed (secprim >= 0.1.1) and, given secrets, DEBUG is off."""
     r = _import_settings({"APP_ENV": app_env})
-    if r["ok"]:
-        # secprim 0.1.0: require_secret still hands out the dev default for
-        # non-prod labels (fixed upstream in 0.1.1, fail-closed). DEBUG is
-        # derived from is_dev() locally, so it is already off.
-        assert r["debug"] is False, r
-        assert not hasattr(importlib.import_module("secprim.secrets"), "is_dev"), (
-            "toolkit has is_dev(): require_secret should now fail closed on "
-            f"APP_ENV={app_env!r}; drop this branch")
-    else:
-        assert r["type"] == "MissingSecret"
+    assert not r["ok"] and r["type"] == "MissingSecret", r
+    r = _import_settings({"APP_ENV": app_env, "DJANGO_SECRET_KEY": "x" * 50,
+                          "FORECAST_API_KEY": "k" * 32})
+    assert r["ok"], r
+    assert r["debug"] is False
 
 
 def test_dev_default_is_never_used_as_a_production_secret():

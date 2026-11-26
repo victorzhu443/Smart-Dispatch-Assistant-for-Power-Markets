@@ -1,9 +1,13 @@
 # syntax=docker/dockerfile:1
 # Dockerfile for Smart Dispatch Forecast API (Phase 5.1)
 #
-# Build (BuildKit; the private toolkit pin in requirements.txt needs a token):
-#   TOOLKIT_TOKEN=<fine-grained PAT, read-only Contents on security-agents> \
-#   docker build --secret id=toolkit_token,env=TOOLKIT_TOKEN -t smart-dispatch-forecast:latest .
+# Build:
+#   docker build -t smart-dispatch-forecast:latest .
+# The security-agents toolkit pinned in requirements.txt is a public
+# repository, so the plain build resolves it anonymously. Only if that
+# repository is ever made private again, pass a read-only token as a BuildKit
+# secret (it is mounted for the pip step only and never written to a layer):
+#   TOOLKIT_TOKEN=<PAT> docker build --secret id=toolkit_token,env=TOOLKIT_TOKEN -t smart-dispatch-forecast:latest .
 # 3.11: the pinned, non-vulnerable python-dotenv/pytest releases require >=3.10,
 # and the test matrix already runs 3.10/3.12 -- 3.9 was the odd one out.
 FROM python:3.11-slim
@@ -31,9 +35,8 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements first (for better caching)
 COPY requirements.txt .
 
-# Install Python dependencies. requirements.txt pins the private
-# security-agents toolkit; the token is a BuildKit secret, mounted only for
-# this step and never written to a layer.
+# Install Python dependencies. The optional toolkit_token secret (see header)
+# is honoured if present and otherwise ignored; the git pin resolves anonymously.
 RUN --mount=type=secret,id=toolkit_token,required=false \
     if [ -s /run/secrets/toolkit_token ]; then \
       git config --global url."https://x-access-token:$(cat /run/secrets/toolkit_token)@github.com/".insteadOf "https://github.com/"; \

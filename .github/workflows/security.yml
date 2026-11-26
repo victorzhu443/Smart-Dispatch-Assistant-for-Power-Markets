@@ -5,10 +5,10 @@ name: security
 # security-agents/.github/workflows/security-reusable.yml; switch to `uses:`
 # on that reusable workflow once it is tagged.
 #
-# TOOLKIT_TOKEN: the shared toolkit `security-agents` is a private repository,
-# so the jobs that install or check it out need a repository secret
-# TOOLKIT_TOKEN (a fine-grained PAT with read-only Contents on
-# victorzhu443/security-agents). Without it those steps fail, loudly.
+# The shared toolkit `security-agents` is a public repository: every install
+# and checkout below works anonymously. TOOLKIT_TOKEN (a fine-grained PAT with
+# read-only Contents on victorzhu443/security-agents) is optional and is used
+# only if set, so nothing breaks if the toolkit is ever made private again.
 on:
   push:
     branches: [main, "security/**"]
@@ -19,7 +19,7 @@ permissions:
 
 env:
   TOOLKIT_REPO: victorzhu443/security-agents
-  TOOLKIT_REF: v0.1.1
+  TOOLKIT_REF: v0.1.1   # keep in step with the pin in requirements*.txt
 
 jobs:
   security-tests:
@@ -29,12 +29,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with: { python-version: "3.11", cache: pip }
-      - name: Let pip clone the private toolkit
+      # security-agents is public: a plain pip install resolves the git pin
+      # anonymously. TOOLKIT_TOKEN is optional and only honoured if set (for
+      # the case the toolkit is ever made private again).
+      - name: Use TOOLKIT_TOKEN for the toolkit clone, if one is configured
         env: { TOKEN: "${{ secrets.TOOLKIT_TOKEN }}" }
         run: |
-          if [ -z "$TOKEN" ]; then
-            echo "::warning::TOOLKIT_TOKEN is not set; installing security-agents will fail."
-          else
+          if [ -n "$TOKEN" ]; then
             git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
           fi
       - run: pip install -r requirements_minimal.txt pytest hypothesis Django sqlalchemy
@@ -47,6 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Check out the toolkit (custom Semgrep rules)
+        # Public repo: github.token is enough; TOOLKIT_TOKEN is used if set.
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ env.TOOLKIT_REPO }}

@@ -1,14 +1,7 @@
 import os
 from pathlib import Path
 
-from secprim import require_secret
-
-try:  # secprim >= 0.1.1: fail-closed label set (staging/qa/typos are not dev)
-    from secprim.secrets import is_dev
-except ImportError:  # 0.1.0 shim; remove when the pin is bumped
-    def is_dev():
-        return (os.environ.get("APP_ENV") or "dev").strip().lower() in {
-            "dev", "development", "test", "testing", "local"}
+from secprim import is_dev, require_secret
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 

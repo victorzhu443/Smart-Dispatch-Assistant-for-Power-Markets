@@ -26,16 +26,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      # requirements_minimal.txt pins the private security-agents toolkit.
-      # TOOLKIT_TOKEN is a fine-grained PAT with read-only Contents on
-      # victorzhu443/security-agents (repository secret). Without it the
-      # install below fails at that line, loudly.
-      - name: Let pip clone the private toolkit
+      # security-agents is public: a plain pip install resolves the git pin
+      # anonymously. TOOLKIT_TOKEN is optional and only honoured if set (for
+      # the case the toolkit is ever made private again).
+      - name: Use TOOLKIT_TOKEN for the toolkit clone, if one is configured
         env: { TOKEN: "${{ secrets.TOOLKIT_TOKEN }}" }
         run: |
-          if [ -z "$TOKEN" ]; then
-            echo "::warning::TOOLKIT_TOKEN is not set; installing security-agents will fail."
-          else
+          if [ -n "$TOKEN" ]; then
             git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
           fi
 

@@ -376,9 +376,10 @@ Ordered by how much they'd need fixing before this is more than a demo.
    `Dockerfile.txt`; it also copied a moved source path, baked in gitignored
    data and `.env`, and never installed the `curl` its HEALTHCHECK calls.
    The image now also ships the packages the API imports (`forecasting_model/`,
-   `common/`) at the repo layout, runs gunicorn as a non-root user, and needs
-   a token for the private toolkit pin at build time:
-   `TOOLKIT_TOKEN=<PAT> docker build --secret id=toolkit_token,env=TOOLKIT_TOKEN -t smart-dispatch-forecast:latest .`
+   `common/`) at the repo layout and runs gunicorn as a non-root user;
+   `docker build -t smart-dispatch-forecast:latest .` works as is (the
+   security toolkit it pins is public; a `toolkit_token` BuildKit secret is
+   optional and only for the case it is made private again).
    Compose runs in production mode and requires `FORECAST_API_KEY` in `.env`
    (see `.env.example`, `SECURITY.md`). Not yet verified against a live Docker
    daemon.
