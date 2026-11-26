@@ -15,7 +15,7 @@ Flask-Limiter==3.11.0      # per-key / per-IP throttle on /forecast* (RC-6)
 security-agents[fetch] @ git+https://github.com/victorzhu443/security-agents@v0.1.1
 
 # Database and data processing
-SQLAlchemy==2.0.21
+SQLAlchemy==2.1.9
 pandas==2.1.1
 numpy==1.24.3
 
@@ -25,15 +25,15 @@ numpy==1.24.3
 # estimator is only guaranteed to load under the same minor; 1.9.x fails with
 # "No module named '_loss'" and the API silently serves its fallback. Retrain
 # (python -m forecasting_model.train_model) before moving this pin.
-scikit-learn==1.6.1
-joblib==1.3.2
+scikit-learn==1.9.1
+joblib==1.6.0
 
 # Environment and configuration
-python-dotenv==1.2.2
+python-dotenv==1.2.4
 
 # Development and testing
-pytest==9.0.3
-requests==2.33.0
+pytest==9.2.0
+requests==2.34.2
 urllib3==2.8.0
 
 # Production server (Dockerfile CMD)
