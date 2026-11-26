@@ -33,7 +33,7 @@ than another local re-implementation. Each is enforced by a test under
 | RC-4 pinned fetch | ERCOT listing/download via a plain HTTP client | **FIXED** — every ERCOT fetch in both ingesters (`ingest_ercot_history.py` and `ingest_recent.py`: six call sites) goes through one helper over `secprim.safe_fetch` pinned to `ercot.com` with a byte cap; the IP is validated once and connected to directly, redirects are never auto-followed. `requests` is no longer imported by either module. |
 | RC-5 secrets | dev `SECRET_KEY` usable in production by omission | **FIXED** — `settings.py` uses `require_secret`: with `APP_ENV=production` a missing `DJANGO_SECRET_KEY` or `FORECAST_API_KEY` is a startup failure (`MissingSecret`); `DEBUG` is derived from `is_dev()` (an explicit dev/test label or none), so `staging`, `qa` or a typo get `DEBUG=False`. `docker-compose.yml` sets `APP_ENV=production` and refuses to start without `FORECAST_API_KEY`. Zero-config dev is unchanged (`tests/security/test_settings_prod.py`). With the toolkit at v0.1.1 `require_secret` is fail-closed too: any label that is not an explicit dev/test one gets no default. |
 | RC-6 access control | `/forecast*` open, wildcard CORS, no throttle | **FIXED (layered)** — bearer token on `/forecast*` (`/health`, `/` open), key from `require_secret`, compared as bytes in constant time; Django is the only client and sends it, so the browser never calls Flask; `CORS` scoped to `DASHBOARD_ORIGIN`; `Flask-Limiter` 60/min as a *default* limit so it is counted before the gate answers — keyed per **verified** token, else per address, so rotating bad tokens stays inside one bucket; `/health` and `/` exempt. **The application is the authentication gate.** The ingress carries rate/connection/body-size ceilings only: an ingress basic-auth gate would consume the same `Authorization` header and make the API unreachable; `auth-url` (an external auth service) is the future edge option (`tests/security/test_access_control.py`, `test_django_proxy.py`). |
-| RC-7 supply chain | no SCA, stale pins | **PARTIAL** — `urllib3`, `requests`, `gunicorn`, `python-dotenv`, `pytest` bumped to non-vulnerable releases; `sca` CI job + Dependabot added; every `uses:` in both workflows is SHA-pinned. **The `flask` 2→3, `flask-cors` 4→6 and `scikit-learn` 1.3→1.5 majors remain** and are the subject of a dedicated PR with regression runs; their seven advisory IDs live in `audit-ignore.toml`, each with a reason and `expires = 2026-12-31` — the `sca` job fails the day one expires. |
+| RC-7 supply chain | no SCA, stale pins | **FIXED** — `urllib3`, `requests`, `gunicorn`, `python-dotenv`, `pytest` bumped first; then the majors: `flask` 2.3.3→3.1.3, `flask-cors` 4.0.0→6.0.5 (path matching is now case-sensitive and specificity-ordered; `CORS(app, origins=[...])` unchanged, verified by the access-control suite), `scikit-learn` 1.3.0→1.6.1 — pinned to the served artifact's own `sklearn_version`, because a pickled estimator only loads under the same minor (1.9.x fails and the API would silently serve its fallback; retrain before moving it). `pip-audit --strict` on `requirements.txt` is clean and `audit-ignore.toml` is empty. `sca` CI job + Dependabot (7-day cooldown) added; every `uses:` SHA-pinned. |
 | RC-9 hardening defaults | no `securityContext`, Flask dev server in the image | **FIXED** — both k8s deployments: `runAsNonRoot`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `capabilities: drop ALL`, seccomp `RuntimeDefault`; Dockerfile runs gunicorn as an unprivileged user on `python:3.11-slim`, copies the API **with the packages it imports** (`forecasting_model/`, `common/`) laid out so `REPO_ROOT` is `/app` (the earlier image copied one file and could not start), and builds with a plain `docker build` (the toolkit pin is public; an optional BuildKit secret `toolkit_token` is honoured if the toolkit is ever private again, and never lands in a layer). `torch.load(weights_only=False)` in `phase_3_5_save_model.py` is **kept and annotated**: the checkpoint deliberately carries the fitted sklearn scaler (a pickled object), so `weights_only=True` cannot load it; the file is self-produced and local, never fetched. *Follow-up:* save the scaler with `joblib` and the metadata as JSON beside a tensors-only `.pt`, then load with `weights_only=True` — a training-output format change, so not done in this pass. |
 
 **Parser registry rule (RC-1 sibling mechanism).** `tests/security/test_fuzz_parsers.py`
@@ -244,14 +244,13 @@ structurally impossible.**
 
 ### Dependency vulnerabilities (pip-audit, 19 across 8 packages at the time)
 
-Not reachable from a traced code path. The safe bumps were applied in the
-root-cause PR (`urllib3` 2.8.0, `requests` 2.33.0, `gunicorn` 23.0.0,
-`python-dotenv` 1.2.2, `pytest` 9.0.3 — all clear in `pip-audit`). **Still
-open, by decision:** `flask`, `flask-cors` and `scikit-learn` are major bumps
-(API changes in flask-cors 6; pickled-estimator compatibility for the served
-joblib artifact in scikit-learn 1.5) and go in a dedicated PR with the full
-regression suite. Until then their seven advisory IDs are ignored in the `sca`
-job with an explicit expiry.
+Not reachable from a traced code path. All applied in two steps: the safe
+bumps in the root-cause PR (`urllib3` 2.8.0, `requests` 2.33.0, `gunicorn`
+23.0.0, `python-dotenv` 1.2.2, `pytest` 9.0.3), then the majors in the RC-7
+follow-up PR (`flask` 3.1.3, `flask-cors` 6.0.5, `scikit-learn` 1.6.1 — the
+artifact's own version, see `requirements.txt`). `pip-audit --strict -r
+requirements.txt` now reports **0 known vulnerabilities** and
+`audit-ignore.toml` holds no entries.
 
 | Package | Pinned | Notable | Fix |
 |---|---|---|---|
@@ -273,8 +272,10 @@ job with an explicit expiry.
   budgets and a pinned fetch; production-refusing secrets; k8s
   `securityContext`; gunicorn/non-root image; safe dependency bumps; CI
   enforcement.
-- **Still documented, not applied:** the `flask`/`flask-cors`/`scikit-learn`
-  majors (dedicated PR); the tensors-only `model.pt` format (RC-9 follow-up).
+- **Applied in the RC-7 follow-up PR:** the `flask`/`flask-cors`/`scikit-learn`
+  majors; `audit-ignore.toml` emptied.
+- **Still documented, not applied:** the tensors-only `model.pt` format (RC-9
+  follow-up).
 
 ### Re-run (deep pass)
 

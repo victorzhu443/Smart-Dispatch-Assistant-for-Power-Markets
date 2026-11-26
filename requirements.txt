@@ -1,10 +1,9 @@
 # requirements.txt for Smart Dispatch Forecast API (Phase 5.1)
 
-# Core Flask dependencies
-# flask 2->3 and flask-cors 4->6 are major bumps with API changes; they are
-# deliberately left for a dedicated PR with regression runs (SECURITY.md RC-7).
-Flask==2.3.3
-Flask-CORS==4.0.0
+# Core Flask dependencies (SECURITY.md RC-7: flask 3 / flask-cors 6 majors
+# landed with the access-control suite as the regression gate)
+Flask==3.1.3
+Flask-CORS==6.0.5
 Flask-Limiter==3.11.0      # per-key / per-IP throttle on /forecast* (RC-6)
 
 # Shared security primitives: boundary validation, zip budgets, secrets,
@@ -21,9 +20,12 @@ pandas==2.1.1
 numpy==1.24.3
 
 # Machine learning
-# scikit-learn 1.3 -> 1.5 changes pickled-estimator compatibility for the
-# served joblib artifact; bumped in the same dedicated PR as the Flask majors.
-scikit-learn==1.3.0
+# scikit-learn is pinned to the version the served artifact was trained with
+# (forecast_model.joblib -> artifact["sklearn_version"] == "1.6.1"). A pickled
+# estimator is only guaranteed to load under the same minor; 1.9.x fails with
+# "No module named '_loss'" and the API silently serves its fallback. Retrain
+# (python -m forecasting_model.train_model) before moving this pin.
+scikit-learn==1.6.1
 joblib==1.3.2
 
 # Environment and configuration
