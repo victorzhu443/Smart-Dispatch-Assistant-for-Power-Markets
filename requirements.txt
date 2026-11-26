@@ -3,7 +3,7 @@
 # Core Flask dependencies
 # flask 2->3 and flask-cors 4->6 are major bumps with API changes; they are
 # deliberately left for a dedicated PR with regression runs (SECURITY.md RC-7).
-Flask==2.3.3
+Flask==3.1.3
 Flask-CORS==4.0.0
 Flask-Limiter==3.11.0      # per-key / per-IP throttle on /forecast* (RC-6)
 
