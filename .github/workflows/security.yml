@@ -59,9 +59,20 @@ jobs:
         with: { python-version: "3.11" }
       - run: pip install semgrep
       - name: Semgrep (custom rules + python/django/secrets/kubernetes packs)
+        # --severity: only ERROR and WARNING rules run, so the toolkit's INFO
+        #   review-aid rules can never fail CI. Every other rule stays fatal.
+        # --exclude-rule avoid-sqlalchemy-text: the 25 `sqlalchemy.text(f"...")`
+        #   sites interpolate hardcoded table/column identifiers (module
+        #   constants and default arguments no caller overrides); every
+        #   per-row predicate is a bound parameter. Traced site by site in
+        #   SECURITY.md, "Hand-traced flows" item 3 (`avoid-sqlalchemy-text`),
+        #   verdict: accepted, no user input. Revisit the moment an identifier
+        #   becomes request-derived.
         run: >
           semgrep scan --config .security-agents/semgrep/rules.yml
           --config p/python --config p/django --config p/secrets --config p/kubernetes
+          --severity ERROR --severity WARNING
+          --exclude-rule python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
           --error --metrics off --exclude .security-agents .
 
   sca:
