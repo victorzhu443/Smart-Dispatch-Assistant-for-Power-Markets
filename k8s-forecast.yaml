@@ -1,34 +1,62 @@
-apiVersion: apps/v1 
-kind: Deployment 
-metadata: 
-  name: forecast-api 
-  namespace: smart-dispatch 
-spec: 
-  replicas: 1 
-  selector: 
-    matchLabels: 
-      app: forecast-api 
-  template: 
-    metadata: 
-      labels: 
-        app: forecast-api 
-    spec: 
-      containers: 
-      - name: forecast-api 
-        image: smart-dispatch-forecast:latest 
-        imagePullPolicy: Never 
-        ports: 
-        - containerPort: 5001 
---- 
-apiVersion: v1 
-kind: Service 
-metadata: 
-  name: forecast-service 
-  namespace: smart-dispatch 
-spec: 
-  selector: 
-    app: forecast-api 
-  ports: 
-  - port: 80 
-    targetPort: 5001 
-  type: ClusterIP 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forecast-api
+  namespace: smart-dispatch
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: forecast-api
+  template:
+    metadata:
+      labels:
+        app: forecast-api
+    spec:
+      # Hardening defaults (SECURITY.md RC-9); see k8s-forecast-deployment.yaml
+      # for the annotated version of the same block.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: forecast-api
+        image: smart-dispatch-forecast:latest
+        imagePullPolicy: Never
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        ports:
+        - containerPort: 5001
+        env:
+        - name: APP_ENV
+          value: "production"
+        - name: FORECAST_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: forecast-api
+              key: FORECAST_API_KEY
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forecast-service
+  namespace: smart-dispatch
+spec:
+  selector:
+    app: forecast-api
+  ports:
+  - port: 80
+    targetPort: 5001
+  type: ClusterIP

@@ -1,5 +1,7 @@
 # Dockerfile for Smart Dispatch Forecast API (Phase 5.1)
-FROM python:3.9-slim
+# 3.11: the pinned, non-vulnerable python-dotenv/pytest releases require >=3.10,
+# and the test matrix already runs 3.10/3.12 -- 3.9 was the odd one out.
+FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
@@ -36,6 +38,13 @@ COPY backend/phase_5_1_forecast_api.py .
 # Create directories for model files
 RUN mkdir -p /app/models
 
+# Run as an unprivileged user (SECURITY.md RC-9). The k8s manifests set
+# runAsNonRoot and a read-only root filesystem; this makes the plain
+# `docker run` path match them.
+RUN groupadd --gid 10001 app && useradd --uid 10001 --gid app --no-create-home app \
+    && chown -R app:app /app
+USER app
+
 # Expose port
 EXPOSE 5001
 
@@ -43,5 +52,9 @@ EXPOSE 5001
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:5001/health || exit 1
 
-# Run the application
-CMD ["python", "phase_5_1_forecast_api.py"]
+# Serve through gunicorn, not Flask's development server. Binding every
+# interface is correct *inside* the container: the port mapping, the k8s
+# Service and the ingress (which carries authn and rate limits) are the
+# perimeter. The application also requires a bearer token on /forecast*.
+CMD ["gunicorn", "--bind", "0.0.0.0:5001", "--workers", "2", "--threads", "4", \
+     "--timeout", "60", "--access-logfile", "-", "phase_5_1_forecast_api:app"]

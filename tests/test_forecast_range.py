@@ -65,7 +65,11 @@ def api():
 
 @pytest.fixture
 def client(api):
-    return api.app.test_client()
+    # /forecast* requires the bearer token the Django proxy sends; the test
+    # client presents the dev default the same way (SECURITY.md RC-6).
+    c = api.app.test_client()
+    c.environ_base["HTTP_AUTHORIZATION"] = f"Bearer {api.FORECAST_API_KEY}"
+    return c
 
 
 class TestRangeContract:
@@ -190,7 +194,8 @@ class TestRangeFallback:
         api.service.load_error = "injected"
 
         response = api.app.test_client().get(
-            "/forecast/range?start=2025-12-15T00:00:00Z&hours=6"
+            "/forecast/range?start=2025-12-15T00:00:00Z&hours=6",
+            headers={"Authorization": f"Bearer {api.FORECAST_API_KEY}"},
         )
 
         assert response.status_code == 200

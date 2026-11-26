@@ -1,0 +1,17 @@
+# Weekly dependency PRs (SECURITY.md RC-7). Majors still land through a
+# dedicated PR with the regression suites; Dependabot keeps the pins moving
+# and surfaces advisories as they appear.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule: { interval: weekly }
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: "/"
+    schedule: { interval: weekly }

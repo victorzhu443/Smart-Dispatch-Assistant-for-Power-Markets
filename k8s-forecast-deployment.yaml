@@ -20,10 +20,28 @@ spec:
         component: forecasting
         version: v1.0
     spec:
+      # Hardening defaults (SECURITY.md RC-9): the image already runs as an
+      # unprivileged user; the pod refuses to run otherwise and drops every
+      # capability. The root filesystem is read-only -- the API only reads the
+      # mounted database and the model artifact, and writes nothing but logs
+      # to stdout. /tmp is a writable emptyDir for Python/gunicorn scratch.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: forecast-api
         image: smart-dispatch-forecast:latest
         imagePullPolicy: Never  # Use local image
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
         ports:
         - containerPort: 5001
           name: http
@@ -32,6 +50,22 @@ spec:
           value: "production"
         - name: PYTHONUNBUFFERED
           value: "1"
+        # Access control (RC-5/RC-6): APP_ENV=production makes a missing key a
+        # startup failure, never a dev default. Create the secret out of band:
+        #   kubectl -n smart-dispatch create secret generic forecast-api \
+        #     --from-literal=FORECAST_API_KEY="$(openssl rand -hex 32)"
+        - name: APP_ENV
+          value: "production"
+        - name: FORECAST_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: forecast-api
+              key: FORECAST_API_KEY
+        - name: DASHBOARD_ORIGIN
+          valueFrom:
+            configMapKeyRef:
+              name: forecast-config
+              key: DASHBOARD_ORIGIN
         resources:
           limits:
             memory: "1Gi"
@@ -60,11 +94,15 @@ spec:
           mountPath: /app/market_data.db
           subPath: market_data.db
           readOnly: true
+        - name: tmp
+          mountPath: /tmp
       volumes:
       - name: market-data
         hostPath:
           path: /tmp/smart-dispatch-data
           type: DirectoryOrCreate
+      - name: tmp
+        emptyDir: {}
       restartPolicy: Always
 
 ---
@@ -96,3 +134,7 @@ data:
   FLASK_ENV: "production"
   PYTHONUNBUFFERED: "1"
   LOG_LEVEL: "INFO"
+  # The one origin allowed by CORS: the Django dashboard. Browsers never call
+  # the API directly (Django proxies and holds the key), so this is belt and
+  # braces rather than the gate.
+  DASHBOARD_ORIGIN: "http://localhost:8000"

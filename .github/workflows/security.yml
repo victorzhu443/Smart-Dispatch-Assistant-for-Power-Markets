@@ -1,0 +1,74 @@
+name: security
+
+# Three enforcement jobs (SECURITY.md, "Enforcement lives in CI"): the security
+# test suite, SAST, and dependency audit. Shapes follow
+# security-agents/.github/workflows/ci.yml.
+#
+# GH_PAT: the shared toolkit `security-agents` is a private repository, so the
+# jobs that install it need a repository secret GH_PAT (a fine-grained token
+# with read access to victorzhu443/security-agents). Without it those jobs
+# fail at install time, loudly.
+on:
+  push:
+    branches: [main, "security/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  security-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - name: Allow pip to clone the private toolkit
+        run: git config --global url."https://${GH_PAT}@github.com/".insteadOf "https://github.com/"
+        env: { GH_PAT: "${{ secrets.GH_PAT }}" }
+      - run: pip install -r requirements_minimal.txt pytest hypothesis Django sqlalchemy
+      - name: Security suite (boundary, access control, zip budgets, secrets, fuzz, LLM01)
+        run: pytest tests/security/ -q --tb=short
+
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: victorzhu443/security-agents
+          ref: v0.1.0
+          token: ${{ secrets.GH_PAT }}
+          path: .security-agents
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install semgrep
+      - name: Semgrep (custom rules + python/django/secrets/kubernetes packs)
+        run: >
+          semgrep scan --config .security-agents/semgrep/rules.yml
+          --config p/python --config p/django --config p/secrets --config p/kubernetes
+          --error --metrics off --exclude .security-agents .
+
+  sca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pip-audit
+      - name: pip-audit (pinned requirements)
+        # Accepted risks go in an ignore list with an expiry, never silently.
+        # The private git dependency cannot be audited from the index; it is
+        # skipped here and covered by security-agents' own CI.
+        #
+        # IGNORED UNTIL the dedicated majors PR lands (flask 2->3, flask-cors
+        # 4->6, scikit-learn 1.3->1.5; SECURITY.md RC-7). Remove every
+        # --ignore-vuln below in that PR; they expire with it and must not
+        # outlive 2026-12-31.
+        run: >
+          grep -v "security-agents" requirements.txt > /tmp/req.txt &&
+          pip-audit --strict --progress-spinner off -r /tmp/req.txt --no-deps
+          --ignore-vuln PYSEC-2026-2151
+          --ignore-vuln PYSEC-2024-271 --ignore-vuln PYSEC-2024-71
+          --ignore-vuln PYSEC-2026-1383 --ignore-vuln PYSEC-2026-1384 --ignore-vuln PYSEC-2026-1385
+          --ignore-vuln PYSEC-2024-110

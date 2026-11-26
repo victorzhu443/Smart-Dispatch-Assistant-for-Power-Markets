@@ -31,7 +31,10 @@ def client():
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.app.test_client()
+    c = module.app.test_client()
+    # /forecast* is bearer-gated (RC-6); present the dev default like Django.
+    c.environ_base["HTTP_AUTHORIZATION"] = f"Bearer {module.FORECAST_API_KEY}"
+    return c
 
 
 NON_FINITE = ["nan", "NaN", "inf", "Inf", "-inf", "infinity", "1e999", "-1e999"]

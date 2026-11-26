@@ -1,8 +1,18 @@
 # requirements.txt for Smart Dispatch Forecast API (Phase 5.1)
 
 # Core Flask dependencies
+# flask 2->3 and flask-cors 4->6 are major bumps with API changes; they are
+# deliberately left for a dedicated PR with regression runs (SECURITY.md RC-7).
 Flask==2.3.3
 Flask-CORS==4.0.0
+Flask-Limiter==3.11.0      # per-key / per-IP throttle on /forecast* (RC-6)
+
+# Shared security primitives: boundary validation, zip budgets, secrets,
+# pinned fetch (SECURITY.md RC-1/2/4/5/6). The repository is private, so CI
+# needs a token with read access: set GH_PAT and rewrite the URL, e.g.
+#   git config --global url."https://${GH_PAT}@github.com/".insteadOf "https://github.com/"
+# Local development: pip install -e ../security-agents
+security-agents[fetch] @ git+https://github.com/victorzhu443/security-agents@v0.1.0
 
 # Database and data processing
 SQLAlchemy==2.0.21
@@ -10,15 +20,18 @@ pandas==2.1.1
 numpy==1.24.3
 
 # Machine learning
+# scikit-learn 1.3 -> 1.5 changes pickled-estimator compatibility for the
+# served joblib artifact; bumped in the same dedicated PR as the Flask majors.
 scikit-learn==1.3.0
 joblib==1.3.2
 
 # Environment and configuration
-python-dotenv==1.0.0
+python-dotenv==1.2.2
 
 # Development and testing
-pytest==7.4.2
-requests==2.31.0
+pytest==9.0.3
+requests==2.33.0
+urllib3==2.8.0
 
-# Optional: For better performance
-gunicorn==21.2.0
+# Production server (Dockerfile CMD)
+gunicorn==23.0.0

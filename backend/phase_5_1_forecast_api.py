@@ -31,8 +31,8 @@ Endpoints:
 """
 from __future__ import annotations
 
+import hmac
 import logging
-import math
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -42,6 +42,9 @@ import numpy as np
 import pandas as pd
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from secprim import MalformedInput, finite_float, require_secret
 from sqlalchemy import create_engine, text
 
 logging.basicConfig(level=logging.INFO)
@@ -351,7 +354,66 @@ def recommend(quantiles: dict, marginal_cost: float) -> dict:
 service = ForecastService()
 
 app = Flask(__name__)
-CORS(app)
+
+# --- Service edge (SECURITY.md RC-6) ---------------------------------------
+# The browser never calls this API: the Django dashboard proxies every request
+# and holds the key. So CORS is scoped to that one origin instead of "*", and
+# every /forecast* route requires a bearer token. In development (APP_ENV
+# unset/dev/test) the key falls back to a documented placeholder so the local
+# flow still works with zero configuration; in production a missing
+# FORECAST_API_KEY refuses to start rather than running open.
+DASHBOARD_ORIGIN = os.environ.get("DASHBOARD_ORIGIN", "http://localhost:8000")
+CORS(app, origins=[DASHBOARD_ORIGIN])
+
+FORECAST_API_KEY = require_secret("FORECAST_API_KEY",
+                                  dev_default="dev-only-forecast-key")
+PROTECTED_PREFIX = "/forecast"
+RATE_LIMIT = os.environ.get("FORECAST_RATE_LIMIT", "60 per minute")
+
+
+def _rate_limit_key() -> str:
+    """Throttle per bearer token when one is presented, else per client IP."""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer ") and len(auth) > 7:
+        return "token:" + auth[7:].strip()
+    return "ip:" + (get_remote_address() or "unknown")
+
+
+limiter = Limiter(
+    key_func=_rate_limit_key,
+    app=app,
+    default_limits=[],
+    storage_uri=os.environ.get("RATE_LIMIT_STORAGE_URI", "memory://"),
+    headers_enabled=True,
+)
+
+
+@app.before_request
+def _require_api_key():
+    """Bearer-token gate for /forecast*. /health and / stay open for probes."""
+    if request.method == "OPTIONS":
+        return None  # CORS preflight carries no credentials by specification
+    if not request.path.startswith(PROTECTED_PREFIX):
+        return None
+    auth = request.headers.get("Authorization", "")
+    presented = auth[7:].strip() if auth.startswith("Bearer ") else ""
+    if not presented or not hmac.compare_digest(presented, FORECAST_API_KEY):
+        return jsonify({"error": "unauthorized",
+                        "detail": "Authorization: Bearer <FORECAST_API_KEY> required"}), 401
+    return None
+
+
+@app.errorhandler(MalformedInput)
+def _malformed_input(exc: MalformedInput):
+    """One boundary-failure type, one mapping (SECURITY.md RC-1). 422 is the
+    status this API has always used for a rejected query parameter."""
+    return jsonify({"error": str(exc)}), 422
+
+
+@app.errorhandler(429)
+def _rate_limited(exc):
+    return jsonify({"error": "rate limit exceeded",
+                    "detail": str(getattr(exc, "description", RATE_LIMIT))}), 429
 
 
 def _provenance(result: dict, data_age_hours: float | None,
@@ -390,26 +452,17 @@ def _provenance(result: dict, data_age_hours: float | None,
 
 
 @app.route("/forecast", methods=["GET"])
+@limiter.limit(lambda: RATE_LIMIT)
 def forecast_endpoint():
     if service.engine is None:
         return jsonify({"error": "database unavailable"}), 503
 
     raw_timestamp = (request.args.get("timestamp") or "").strip()
-    try:
-        marginal_cost = float(request.args.get("marginal_cost",
-                                               DEFAULT_MARGINAL_COST))
-    except ValueError:
-        return jsonify({
-            "error": "marginal_cost must be a number",
-            "received": request.args.get("marginal_cost"),
-        }), 422
-    # float() accepts "nan"/"inf"; a non-finite marginal_cost would otherwise
-    # propagate NaN into the recommendation margin and emit invalid (NaN) JSON.
-    if not math.isfinite(marginal_cost):
-        return jsonify({
-            "error": "marginal_cost must be a finite number",
-            "received": request.args.get("marginal_cost"),
-        }), 422
+    # Boundary validation (RC-1): a real, finite number or a 422 from the
+    # MalformedInput handler. float() alone accepts "nan"/"inf"/"1e999", which
+    # would propagate NaN into the margin and emit invalid JSON.
+    marginal_cost = finite_float(
+        request.args.get("marginal_cost", DEFAULT_MARGINAL_COST), "marginal_cost")
 
     latest = service.latest_data_time()
     if latest is None:
@@ -472,33 +525,18 @@ MAX_RANGE_HOURS = 168
 
 
 @app.route("/forecast/range", methods=["GET"])
+@limiter.limit(lambda: RATE_LIMIT)
 def forecast_range_endpoint():
     """Consecutive hours in one call, for charting a forecast band."""
     if service.engine is None:
         return jsonify({"error": "database unavailable"}), 503
 
-    try:
-        hours = int(request.args.get("hours", 24))
-        marginal_cost = float(request.args.get("marginal_cost",
-                                               DEFAULT_MARGINAL_COST))
-    except ValueError:
-        return jsonify({
-            "error": "hours and marginal_cost must be numbers",
-        }), 422
-
-    # float() accepts "nan"/"inf"; reject a non-finite marginal_cost before it
-    # reaches the recommendation (NaN margin / invalid JSON).
-    if not math.isfinite(marginal_cost):
-        return jsonify({
-            "error": "marginal_cost must be a finite number",
-            "received": request.args.get("marginal_cost"),
-        }), 422
-
-    if not 1 <= hours <= MAX_RANGE_HOURS:
-        return jsonify({
-            "error": f"hours must be between 1 and {MAX_RANGE_HOURS}",
-            "received": hours,
-        }), 422
+    # Boundary validation (RC-1): both parameters are checked by the shared
+    # primitive and a failure becomes a 422 via the MalformedInput handler.
+    hours = int(finite_float(request.args.get("hours", 24), "hours",
+                             lo=1, hi=MAX_RANGE_HOURS))
+    marginal_cost = finite_float(
+        request.args.get("marginal_cost", DEFAULT_MARGINAL_COST), "marginal_cost")
 
     latest = service.latest_data_time()
     if latest is None:
@@ -637,7 +675,10 @@ def main() -> None:
     if service.artifact is None:
         logger.warning("no model artifact — serving the labelled fallback. "
                        "Run: python -m forecasting_model.train_model")
-    app.run(host="0.0.0.0", port=5001, debug=False)
+    # Local development only. Production serves this module through gunicorn
+    # (see Dockerfile CMD); inside the container binding every interface is the
+    # intended behaviour, and the ingress/network policy is the perimeter.
+    app.run(host=os.environ.get("FORECAST_BIND", "127.0.0.1"), port=5001, debug=False)
 
 
 if __name__ == "__main__":

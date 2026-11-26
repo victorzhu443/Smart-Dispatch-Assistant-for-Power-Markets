@@ -35,13 +35,16 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import sys
 import zipfile
 from pathlib import Path
+from urllib.parse import urlencode
 
 import pandas as pd
-import requests
+from secprim import safe_zip_members
+from secprim.safe_fetch import safe_fetch
 from sqlalchemy import create_engine, text
 
 from common.db import setup_database_connection
@@ -51,6 +54,19 @@ from data_ingestion import quality
 # ERCOT public MIS endpoints. Anonymous access; no API key.
 MIS_LIST_URL = "https://www.ercot.com/misapp/servlets/IceDocListJsonWS"
 MIS_DOWNLOAD_URL = "https://www.ercot.com/misdownload/servlets/mirDownload"
+
+# Every fetch goes through secprim.safe_fetch pinned to ERCOT's domain: a
+# redirect or DNS answer pointing anywhere else is refused, and the body is
+# read under a byte cap (SECURITY.md RC-4). The caps below are generous: the
+# largest real annual archive is ~14 MB compressed holding a ~23 MB workbook
+# (measured over the 2024-2026 RTM/DAM archives), so 200 MB per member and
+# 1 GB per archive leave roughly 8x headroom while still refusing a
+# decompression bomb before any byte of it is read (RC-2).
+ERCOT_ALLOW_HOSTS = ["ercot.com"]
+MAX_LISTING_BYTES = 20_000_000
+MAX_DOWNLOAD_BYTES = 200_000_000
+MAX_MEMBER_BYTES = 200_000_000
+MAX_ARCHIVE_BYTES = 1_000_000_000
 
 # Annual archives, one per year, published back to 2010.
 #   13061  Real-time market settlement point prices (15-minute)
@@ -82,14 +98,36 @@ class IngestionError(RuntimeError):
     """Ingestion could not produce trustworthy data."""
 
 
+def _fetch(url: str, params: dict, *, timeout: float, max_bytes: int):
+    """GET an ERCOT endpoint through the pinned, capped fetch primitive.
+
+    Raises IngestionError on a non-2xx status (the equivalent of the previous
+    `raise_for_status`), and secprim's MalformedInput subclasses when the
+    destination or size is refused.
+    """
+    response = safe_fetch(f"{url}?{urlencode(params)}",
+                          allow_hosts=ERCOT_ALLOW_HOSTS,
+                          max_bytes=max_bytes, timeout=timeout)
+    if not 200 <= response.status_code < 300:
+        raise IngestionError(f"{url}: HTTP {response.status_code}")
+    return response
+
+
+def _first_member(zf: zipfile.ZipFile) -> zipfile.ZipInfo:
+    """The single workbook in an annual archive, admitted only after the
+    archive's declared sizes, names and compression ratios pass the budget
+    (RC-2). Nothing is read before this check."""
+    members = list(safe_zip_members(zf, max_member_bytes=MAX_MEMBER_BYTES,
+                                    max_total_bytes=MAX_ARCHIVE_BYTES))
+    return members[0]
+
+
 def list_annual_archives(report_type_id: int = SPP_REPORT_TYPE_ID) -> dict[int, int]:
     """Map year -> ERCOT document id for every published annual archive."""
-    response = requests.get(
-        MIS_LIST_URL, params={"reportTypeId": report_type_id}, timeout=60
-    )
-    response.raise_for_status()
+    response = _fetch(MIS_LIST_URL, {"reportTypeId": report_type_id},
+                      timeout=60, max_bytes=MAX_LISTING_BYTES)
 
-    documents = response.json()["ListDocsByRptTypeRes"]["DocumentList"]
+    documents = json.loads(response.content)["ListDocsByRptTypeRes"]["DocumentList"]
     archives = {}
     for entry in documents:
         doc = entry["Document"]
@@ -119,10 +157,8 @@ def download_archive(year: int, doc_id: int, prefix: str = "RTMLZHBSPP",
         return destination
 
     print(f"  {year}: downloading...")
-    response = requests.get(
-        MIS_DOWNLOAD_URL, params={"doclookupId": doc_id}, timeout=300
-    )
-    response.raise_for_status()
+    response = _fetch(MIS_DOWNLOAD_URL, {"doclookupId": doc_id},
+                      timeout=300, max_bytes=MAX_DOWNLOAD_BYTES)
 
     if not response.content.startswith(b"PK"):
         raise IngestionError(
@@ -141,8 +177,7 @@ def parse_archive(archive_path: Path, hubs: list[str]) -> pd.DataFrame:
     Each archive holds a single workbook with one sheet per month.
     """
     with zipfile.ZipFile(archive_path) as zf:
-        workbook_name = zf.namelist()[0]
-        workbook = pd.ExcelFile(io.BytesIO(zf.read(workbook_name)))
+        workbook = pd.ExcelFile(io.BytesIO(zf.read(_first_member(zf))))
 
         monthly_frames = []
         for sheet in workbook.sheet_names:
@@ -210,8 +245,7 @@ def parse_dam_archive(archive_path: Path, hubs: list[str]) -> pd.DataFrame:
     an integer, and the settlement point column is named differently.
     """
     with zipfile.ZipFile(archive_path) as zf:
-        workbook_name = zf.namelist()[0]
-        workbook = pd.ExcelFile(io.BytesIO(zf.read(workbook_name)))
+        workbook = pd.ExcelFile(io.BytesIO(zf.read(_first_member(zf))))
 
         monthly_frames = []
         for sheet in workbook.sheet_names:
